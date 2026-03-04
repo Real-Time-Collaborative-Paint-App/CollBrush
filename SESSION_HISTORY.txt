@@ -77,3 +77,12 @@ Date: 2026-03-04
     - Remote cursor dot and cursor nickname label now use each user's assigned color.
     Result:
     - Each user is visually identifiable by random color and animal emoji, without affecting drawing stroke color.
+
+[10] Request: Add emoji icons to each tool and add a new Bucket tool that works like Microsoft Paint fill.
+    Changes made:
+    - Added tool emoji labels: ✏️ Pen, 🧽 Eraser, 🪣 Bucket.
+    - Implemented bucket flood-fill on canvas with contiguous pixel fill behavior.
+    - Added realtime `fill-area` event so bucket actions sync instantly to all users.
+    - Migrated board history from only segments to a unified action stream (segments + fills) so new users replay full board state correctly.
+    Result:
+    - Bucket tool works collaboratively like Paint fill and all tools now have emoji icons.

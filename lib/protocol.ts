@@ -13,6 +13,15 @@ export interface DrawSegment {
   mode: DrawMode;
 }
 
+export interface FillAction {
+  point: Point;
+  color: string;
+}
+
+export type BoardAction =
+  | { type: "segment"; segment: DrawSegment }
+  | { type: "fill"; fill: FillAction };
+
 export interface BoardUser {
   socketId: string;
   userId: string;
@@ -36,13 +45,15 @@ export interface CursorState extends CursorMovePayload {
   socketId: string;
   userId: string;
   nickname: string;
+  cursorColor: string;
+  animalEmoji: string;
 }
 
 export type JoinBoardErrorCode = "BOARD_FULL" | "INVALID_BOARD" | "INVALID_USER";
 
 export interface JoinBoardSuccess {
   ok: true;
-  segments: DrawSegment[];
+  actions: BoardAction[];
   usersCount: number;
   users: BoardUser[];
 }

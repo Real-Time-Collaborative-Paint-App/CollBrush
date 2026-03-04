@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { readStoredAccount, saveAccount, type CollBrushAccount } from "@/lib/account";
 import type {
+  BoardAction,
   BoardUser,
   CursorState,
   DrawMode,
   DrawSegment,
+  FillAction,
   JoinBoardResponse,
   Point,
 } from "@/lib/protocol";
@@ -19,8 +21,32 @@ type CollaborativeBoardProps = {
   nickname: string;
 };
 
+type ToolMode = DrawMode | "bucket";
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
+
+const hexToRgba = (hexColor: string): [number, number, number, number] => {
+  const hex = hexColor.replace("#", "").trim();
+  if (hex.length !== 6) {
+    return [17, 24, 39, 255];
+  }
+
+  const red = Number.parseInt(hex.slice(0, 2), 16);
+  const green = Number.parseInt(hex.slice(2, 4), 16);
+  const blue = Number.parseInt(hex.slice(4, 6), 16);
+  return [red, green, blue, 255];
+};
+
+const colorsEqual = (
+  data: Uint8ClampedArray,
+  index: number,
+  color: [number, number, number, number],
+) =>
+  data[index] === color[0] &&
+  data[index + 1] === color[1] &&
+  data[index + 2] === color[2] &&
+  data[index + 3] === color[3];
 
 const drawSegmentOnContext = (ctx: CanvasRenderingContext2D, segment: DrawSegment) => {
   ctx.save();
@@ -42,7 +68,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  const segmentsRef = useRef<DrawSegment[]>([]);
+  const actionsRef = useRef<BoardAction[]>([]);
   const lastCursorEmitRef = useRef(0);
 
   const isDrawingRef = useRef(false);
@@ -54,7 +80,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [remoteCursors, setRemoteCursors] = useState<Record<string, CursorState>>({});
   const [color, setColor] = useState("#111827");
   const [brushSize, setBrushSize] = useState(4);
-  const [mode, setMode] = useState<DrawMode>("draw");
+  const [mode, setMode] = useState<ToolMode>("draw");
   const [joinError, setJoinError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [account, setAccount] = useState<CollBrushAccount | null>(null);
@@ -128,8 +154,73 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     }
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    for (const segment of segmentsRef.current) {
-      drawSegmentOnContext(ctx, segment);
+
+    const applyFillAction = (fill: FillAction) => {
+      const startX = Math.floor(fill.point.x);
+      const startY = Math.floor(fill.point.y);
+      if (
+        startX < 0 ||
+        startY < 0 ||
+        startX >= canvas.width ||
+        startY >= canvas.height
+      ) {
+        return;
+      }
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      const targetIndex = (startY * canvas.width + startX) * 4;
+      const target: [number, number, number, number] = [
+        data[targetIndex],
+        data[targetIndex + 1],
+        data[targetIndex + 2],
+        data[targetIndex + 3],
+      ];
+      const replacement = hexToRgba(fill.color);
+
+      if (
+        target[0] === replacement[0] &&
+        target[1] === replacement[1] &&
+        target[2] === replacement[2] &&
+        target[3] === replacement[3]
+      ) {
+        return;
+      }
+
+      const stack: number[] = [startX, startY];
+      while (stack.length > 0) {
+        const y = stack.pop() as number;
+        const x = stack.pop() as number;
+
+        if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) {
+          continue;
+        }
+
+        const index = (y * canvas.width + x) * 4;
+        if (!colorsEqual(data, index, target)) {
+          continue;
+        }
+
+        data[index] = replacement[0];
+        data[index + 1] = replacement[1];
+        data[index + 2] = replacement[2];
+        data[index + 3] = replacement[3];
+
+        stack.push(x + 1, y);
+        stack.push(x - 1, y);
+        stack.push(x, y + 1);
+        stack.push(x, y - 1);
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+    };
+
+    for (const action of actionsRef.current) {
+      if (action.type === "segment") {
+        drawSegmentOnContext(ctx, action.segment);
+      } else {
+        applyFillAction(action.fill);
+      }
     }
   }, []);
 
@@ -153,22 +244,86 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     redrawFromSegments();
   }, [redrawFromSegments]);
 
-  const applySegment = useCallback((segment: DrawSegment, pushToState: boolean) => {
+  const applyBoardAction = useCallback((action: BoardAction, pushToState: boolean) => {
     const canvas = canvasRef.current;
     if (!canvas) {
-      return;
+      return false;
     }
 
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      return;
+      return false;
     }
 
-    drawSegmentOnContext(ctx, segment);
+    let applied = true;
 
-    if (pushToState) {
-      segmentsRef.current.push(segment);
+    if (action.type === "segment") {
+      drawSegmentOnContext(ctx, action.segment);
+    } else {
+      const startX = Math.floor(action.fill.point.x);
+      const startY = Math.floor(action.fill.point.y);
+      if (
+        startX < 0 ||
+        startY < 0 ||
+        startX >= canvas.width ||
+        startY >= canvas.height
+      ) {
+        return false;
+      }
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      const targetIndex = (startY * canvas.width + startX) * 4;
+      const target: [number, number, number, number] = [
+        data[targetIndex],
+        data[targetIndex + 1],
+        data[targetIndex + 2],
+        data[targetIndex + 3],
+      ];
+      const replacement = hexToRgba(action.fill.color);
+
+      if (
+        target[0] === replacement[0] &&
+        target[1] === replacement[1] &&
+        target[2] === replacement[2] &&
+        target[3] === replacement[3]
+      ) {
+        applied = false;
+      } else {
+        const stack: number[] = [startX, startY];
+        while (stack.length > 0) {
+          const y = stack.pop() as number;
+          const x = stack.pop() as number;
+
+          if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) {
+            continue;
+          }
+
+          const index = (y * canvas.width + x) * 4;
+          if (!colorsEqual(data, index, target)) {
+            continue;
+          }
+
+          data[index] = replacement[0];
+          data[index + 1] = replacement[1];
+          data[index + 2] = replacement[2];
+          data[index + 3] = replacement[3];
+
+          stack.push(x + 1, y);
+          stack.push(x - 1, y);
+          stack.push(x, y + 1);
+          stack.push(x, y - 1);
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+      }
     }
+
+    if (pushToState && applied) {
+      actionsRef.current.push(action);
+    }
+
+    return applied;
   }, []);
 
   const handleClear = useCallback(() => {
@@ -182,7 +337,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       return;
     }
 
-    segmentsRef.current = [];
+    actionsRef.current = [];
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   }, []);
 
@@ -239,7 +394,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         setJoinError(null);
         setUsersCount(response.usersCount);
         setBoardUsers(response.users);
-        segmentsRef.current = response.segments;
+        actionsRef.current = response.actions;
         redrawFromSegments();
       });
     });
@@ -265,7 +420,23 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     });
 
     socket.on("draw-segment", (segment: DrawSegment) => {
-      applySegment(segment, true);
+      applyBoardAction(
+        {
+          type: "segment",
+          segment,
+        },
+        true,
+      );
+    });
+
+    socket.on("fill-area", (fill: FillAction) => {
+      applyBoardAction(
+        {
+          type: "fill",
+          fill,
+        },
+        true,
+      );
     });
 
     socket.on("cursor-move", (cursorState: CursorState) => {
@@ -294,7 +465,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     return () => {
       socket.disconnect();
     };
-  }, [account, applySegment, boardId, handleClear, redrawFromSegments, router]);
+  }, [account, applyBoardAction, boardId, handleClear, redrawFromSegments, router]);
 
   const startDrawing = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (joinError) {
@@ -308,6 +479,27 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     const point = getCanvasPoint(event);
     if (!point) {
+      return;
+    }
+
+    if (mode === "bucket") {
+      const fill: FillAction = {
+        point,
+        color,
+      };
+
+      const applied = applyBoardAction(
+        {
+          type: "fill",
+          fill,
+        },
+        true,
+      );
+
+      if (applied) {
+        socketRef.current?.emit("fill-area", fill);
+      }
+
       return;
     }
 
@@ -350,10 +542,16 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       to: currentPoint,
       color: mode === "erase" ? "#000000" : color,
       size: clamp(brushSize, 1, 40),
-      mode,
+      mode: mode === "erase" ? "erase" : "draw",
     };
 
-    applySegment(segment, true);
+    applyBoardAction(
+      {
+        type: "segment",
+        segment,
+      },
+      true,
+    );
     socketRef.current?.emit("draw-segment", segment);
 
     previousPointRef.current = currentPoint;
@@ -426,7 +624,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                 mode === "draw" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
             >
-              Pen
+              ✏️ Pen
             </button>
             <button
               type="button"
@@ -435,7 +633,16 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                 mode === "erase" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
             >
-              Eraser
+              🧽 Eraser
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("bucket")}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                mode === "bucket" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
+              }`}
+            >
+              🪣 Bucket
             </button>
 
             <div className="mx-1 h-6 w-px bg-zinc-300" />

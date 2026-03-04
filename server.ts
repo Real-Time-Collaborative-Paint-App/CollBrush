@@ -2,9 +2,11 @@ import { createServer } from "node:http";
 import next from "next";
 import { Server as IOServer } from "socket.io";
 import type {
+  BoardAction,
   BoardUser,
   CursorMovePayload,
   CursorState,
+  FillAction,
   DrawSegment,
   JoinBoardRequest,
   JoinBoardResponse,
@@ -19,11 +21,11 @@ const handle = app.getRequestHandler();
 
 type BoardState = {
   users: Map<string, BoardUser>;
-  segments: DrawSegment[];
+  actions: BoardAction[];
 };
 
 const MAX_USERS_PER_BOARD = 10;
-const MAX_SEGMENTS_PER_BOARD = 20000;
+const MAX_ACTIONS_PER_BOARD = 25000;
 
 const CURSOR_COLORS = [
   "#2563eb",
@@ -52,7 +54,7 @@ const getBoard = (boardId: string): BoardState => {
 
   const created: BoardState = {
     users: new Map<string, BoardUser>(),
-    segments: [],
+    actions: [],
   };
 
   boards.set(boardId, created);
@@ -170,7 +172,7 @@ void app.prepare().then(() => {
 
       callback({
         ok: true,
-        segments: board.segments,
+        actions: board.actions,
         usersCount: users.length,
         users,
       });
@@ -189,12 +191,37 @@ void app.prepare().then(() => {
         return;
       }
 
-      board.segments.push(segment);
-      if (board.segments.length > MAX_SEGMENTS_PER_BOARD) {
-        board.segments.splice(0, board.segments.length - MAX_SEGMENTS_PER_BOARD);
+      board.actions.push({
+        type: "segment",
+        segment,
+      });
+      if (board.actions.length > MAX_ACTIONS_PER_BOARD) {
+        board.actions.splice(0, board.actions.length - MAX_ACTIONS_PER_BOARD);
       }
 
       socket.to(boardId).emit("draw-segment", segment);
+    });
+
+    socket.on("fill-area", (fill: FillAction) => {
+      const boardId = socket.data.boardId as string | undefined;
+      if (!boardId) {
+        return;
+      }
+
+      const board = boards.get(boardId);
+      if (!board) {
+        return;
+      }
+
+      board.actions.push({
+        type: "fill",
+        fill,
+      });
+      if (board.actions.length > MAX_ACTIONS_PER_BOARD) {
+        board.actions.splice(0, board.actions.length - MAX_ACTIONS_PER_BOARD);
+      }
+
+      socket.to(boardId).emit("fill-area", fill);
     });
 
     socket.on("cursor-move", (payload: CursorMovePayload) => {
@@ -236,7 +263,7 @@ void app.prepare().then(() => {
         return;
       }
 
-      board.segments = [];
+      board.actions = [];
       io.to(boardId).emit("clear-board");
     });
 
