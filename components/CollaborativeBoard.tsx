@@ -9,8 +9,6 @@ type CollaborativeBoardProps = {
   boardId: string;
 };
 
-const COLORS = ["#111827", "#2563eb", "#dc2626", "#059669", "#7c3aed", "#f59e0b"];
-
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
@@ -41,7 +39,7 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
   const previousPointRef = useRef<Point | null>(null);
 
   const [usersCount, setUsersCount] = useState(1);
-  const [color, setColor] = useState(COLORS[0]);
+  const [color, setColor] = useState("#111827");
   const [brushSize, setBrushSize] = useState(4);
   const [mode, setMode] = useState<DrawMode>("draw");
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -312,25 +310,19 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
 
             <div className="mx-1 h-6 w-px bg-zinc-300" />
 
-            <div className="flex items-center gap-1">
-              {COLORS.map((entryColor) => (
-                <button
-                  key={entryColor}
-                  type="button"
-                  onClick={() => {
-                    setColor(entryColor);
-                    setMode("draw");
-                  }}
-                  className={`h-7 w-7 rounded-full border transition ${
-                    color === entryColor && mode === "draw"
-                      ? "scale-110 border-zinc-900"
-                      : "border-zinc-300 hover:scale-105"
-                  }`}
-                  style={{ backgroundColor: entryColor }}
-                  aria-label={`Use color ${entryColor}`}
-                />
-              ))}
-            </div>
+            <label className="flex items-center gap-2 text-sm text-zinc-600">
+              Color
+              <input
+                type="color"
+                value={color}
+                onChange={(event) => {
+                  setColor(event.target.value);
+                  setMode("draw");
+                }}
+                className="h-8 w-10 cursor-pointer rounded border border-zinc-300 bg-white p-1"
+                aria-label="Pick drawing color"
+              />
+            </label>
 
             <label className="ml-2 flex items-center gap-2 text-sm text-zinc-600">
               Size

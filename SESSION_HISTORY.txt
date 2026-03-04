@@ -34,3 +34,11 @@ Date: 2026-03-04
     - Home page now reads `error` query param and displays "This Board is full" message.
     Result:
     - Any user above the 10-user limit is denied, redirected to main page, and sees the required error text.
+
+[5] Request: Rework color choosing to use a color palette instead of predefined options.
+    Changes made:
+    - Removed fixed preset color swatches from the toolbar.
+    - Added a color palette picker using `input type="color"`.
+    - Picker now sets selected color and switches tool to pen mode automatically.
+    Result:
+    - Users can choose any color from the palette for drawing.
