@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { readStoredAccount, saveAccount } from "@/lib/account";
 
 const createBoardId = () => {
   const randomChunk = Math.random().toString(36).slice(2, 6);
@@ -12,15 +13,57 @@ export default function Home() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [boardId, setBoardId] = useState("");
+  const [nickname, setNickname] = useState("");
   const fullBoardError = searchParams.get("error") === "board-full";
+  const loginRequiredError = searchParams.get("error") === "login-required";
 
-  const goToBoard = (nextBoardId: string) => {
-    const sanitized = nextBoardId.trim().slice(0, 80);
-    if (!sanitized) {
+  useEffect(() => {
+    if (typeof window === "undefined") {
       return;
     }
 
-    router.push(`/board/${encodeURIComponent(sanitized)}`);
+    const storedAccount = readStoredAccount();
+    if (storedAccount) {
+      setNickname(storedAccount.nickname);
+    }
+  }, []);
+
+  const ensureNickname = () => {
+    const currentNickname = nickname.trim().slice(0, 40);
+    if (currentNickname) {
+      return currentNickname;
+    }
+
+    if (typeof window === "undefined") {
+      return "";
+    }
+
+    const promptedNickname = window.prompt("Enter your nickname", "")?.trim().slice(0, 40) ?? "";
+    if (!promptedNickname) {
+      return "";
+    }
+
+    setNickname(promptedNickname);
+    saveAccount({ nickname: promptedNickname });
+    return promptedNickname;
+  };
+
+  const goToBoard = (nextBoardId: string) => {
+    const sanitized = nextBoardId.trim().slice(0, 80);
+    const safeNickname = ensureNickname();
+
+    if (!sanitized || !safeNickname) {
+      return;
+    }
+
+    const account = saveAccount({ nickname: safeNickname });
+
+    const params = new URLSearchParams({
+      uid: account.userId,
+      name: account.nickname,
+    });
+
+    router.push(`/board/${encodeURIComponent(sanitized)}?${params.toString()}`);
   };
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -40,6 +83,25 @@ export default function Home() {
             This Board is full
           </p>
         ) : null}
+        {loginRequiredError ? (
+          <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
+            Enter your nickname to join a board
+          </p>
+        ) : null}
+
+        <div className="mt-5 space-y-2">
+          <label className="block text-sm font-medium text-zinc-700" htmlFor="nickname">
+            Your nickname
+          </label>
+          <input
+            id="nickname"
+            value={nickname}
+            maxLength={40}
+            onChange={(event) => setNickname(event.target.value)}
+            placeholder="Enter nickname"
+            className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none transition focus:border-zinc-500"
+          />
+        </div>
 
         <form className="mt-6 space-y-3" onSubmit={onSubmit}>
           <label className="block text-sm font-medium text-zinc-700" htmlFor="boardId">

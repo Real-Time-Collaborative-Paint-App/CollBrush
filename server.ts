@@ -1,7 +1,14 @@
 import { createServer } from "node:http";
 import next from "next";
 import { Server as IOServer } from "socket.io";
-import type { DrawSegment, JoinBoardResponse } from "./lib/protocol";
+import type {
+  BoardUser,
+  CursorMovePayload,
+  CursorState,
+  DrawSegment,
+  JoinBoardRequest,
+  JoinBoardResponse,
+} from "./lib/protocol";
 
 const dev = process.env.NODE_ENV !== "production";
 const host = "0.0.0.0";
@@ -11,12 +18,29 @@ const app = next({ dev, hostname: host, port });
 const handle = app.getRequestHandler();
 
 type BoardState = {
-  users: Set<string>;
+  users: Map<string, BoardUser>;
   segments: DrawSegment[];
 };
 
 const MAX_USERS_PER_BOARD = 10;
 const MAX_SEGMENTS_PER_BOARD = 20000;
+
+const CURSOR_COLORS = [
+  "#2563eb",
+  "#ef4444",
+  "#10b981",
+  "#f59e0b",
+  "#8b5cf6",
+  "#ec4899",
+  "#06b6d4",
+  "#84cc16",
+  "#f97316",
+  "#14b8a6",
+];
+
+const ANIMAL_EMOJIS = ["🐶", "🐱", "🐰", "🦊", "🐼", "🐨", "🐯", "🦁", "🐸", "🐧", "🦉", "🦄"];
+
+const pickRandom = <T,>(items: T[]): T => items[Math.floor(Math.random() * items.length)];
 
 const boards = new Map<string, BoardState>();
 
@@ -27,7 +51,7 @@ const getBoard = (boardId: string): BoardState => {
   }
 
   const created: BoardState = {
-    users: new Set<string>(),
+    users: new Map<string, BoardUser>(),
     segments: [],
   };
 
@@ -59,6 +83,19 @@ void app.prepare().then(() => {
   });
 
   io.on("connection", (socket) => {
+    const emitPresence = (boardId: string) => {
+      const board = boards.get(boardId);
+      if (!board) {
+        return;
+      }
+
+      const users = Array.from(board.users.values());
+      io.to(boardId).emit("presence", {
+        usersCount: users.length,
+        users,
+      });
+    };
+
     const leaveCurrentBoard = () => {
       const currentBoardId = socket.data.boardId as string | undefined;
       if (!currentBoardId) {
@@ -73,19 +110,33 @@ void app.prepare().then(() => {
 
       board.users.delete(socket.id);
       socket.leave(currentBoardId);
-      io.to(currentBoardId).emit("presence", { usersCount: board.users.size });
+      socket.to(currentBoardId).emit("cursor-leave", { socketId: socket.id });
+      emitPresence(currentBoardId);
       socket.data.boardId = undefined;
+      socket.data.user = undefined;
 
       cleanupBoardIfEmpty(currentBoardId);
     };
 
-    socket.on("join-board", (boardIdRaw: string, callback: (response: JoinBoardResponse) => void) => {
-      const boardId = (boardIdRaw ?? "").trim().slice(0, 80);
+    socket.on("join-board", (request: JoinBoardRequest, callback: (response: JoinBoardResponse) => void) => {
+      const boardId = (request.boardId ?? "").trim().slice(0, 80);
+      const userId = (request.userId ?? "").trim().slice(0, 80);
+      const nickname = (request.nickname ?? "").trim().slice(0, 40);
 
       if (!boardId) {
         callback({
           ok: false,
           reason: "Board ID is required.",
+          code: "INVALID_BOARD",
+        });
+        return;
+      }
+
+      if (!userId || !nickname) {
+        callback({
+          ok: false,
+          reason: "User info is required.",
+          code: "INVALID_USER",
         });
         return;
       }
@@ -97,21 +148,34 @@ void app.prepare().then(() => {
         callback({
           ok: false,
           reason: "This Board is full",
+          code: "BOARD_FULL",
         });
         return;
       }
 
-      board.users.add(socket.id);
+      const user: BoardUser = {
+        socketId: socket.id,
+        userId,
+        nickname,
+        cursorColor: pickRandom(CURSOR_COLORS),
+        animalEmoji: pickRandom(ANIMAL_EMOJIS),
+      };
+
+      board.users.set(socket.id, user);
       socket.join(boardId);
       socket.data.boardId = boardId;
+      socket.data.user = user;
+
+      const users = Array.from(board.users.values());
 
       callback({
         ok: true,
         segments: board.segments,
-        usersCount: board.users.size,
+        usersCount: users.length,
+        users,
       });
 
-      io.to(boardId).emit("presence", { usersCount: board.users.size });
+      emitPresence(boardId);
     });
 
     socket.on("draw-segment", (segment: DrawSegment) => {
@@ -131,6 +195,34 @@ void app.prepare().then(() => {
       }
 
       socket.to(boardId).emit("draw-segment", segment);
+    });
+
+    socket.on("cursor-move", (payload: CursorMovePayload) => {
+      const boardId = socket.data.boardId as string | undefined;
+      if (!boardId) {
+        return;
+      }
+
+      const board = boards.get(boardId);
+      if (!board) {
+        return;
+      }
+
+      const user = board.users.get(socket.id);
+      if (!user) {
+        return;
+      }
+
+      const x = Number.isFinite(payload.x) ? Math.min(1, Math.max(0, payload.x)) : 0;
+      const y = Number.isFinite(payload.y) ? Math.min(1, Math.max(0, payload.y)) : 0;
+
+      const cursorState: CursorState = {
+        ...user,
+        x,
+        y,
+      };
+
+      socket.to(boardId).emit("cursor-move", cursorState);
     });
 
     socket.on("clear-board", () => {

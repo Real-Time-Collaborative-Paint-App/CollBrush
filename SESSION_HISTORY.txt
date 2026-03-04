@@ -42,3 +42,38 @@ Date: 2026-03-04
     - Picker now sets selected color and switches tool to pen mode automatically.
     Result:
     - Users can choose any color from the palette for drawing.
+
+[6] Request: Add login to distinguish users, show each user's cursor with nickname, and add per-board active user list at top.
+    Changes made:
+    - Extended realtime protocol with user identity, join request payload, presence users list, and cursor events.
+    - Added nickname-based login flow on home page (nickname input + persisted user id/nickname in localStorage).
+    - Board route now passes user identity (`uid`, `name`) to the collaborative board page.
+    - Server now stores per-board user metadata, emits full presence user lists, and broadcasts cursor positions.
+    - Board UI now shows active users list in the header and renders live remote cursors with nickname labels.
+    Result:
+    - Users are distinguished by nickname, visible to others in presence list and cursor labels in real time.
+
+[7] Request: Ask nickname when creating/joining board; ensure top user list and nickname cursors are visible.
+    Changes made:
+    - Updated home flow so Join/Create actively prompts for nickname if nickname field is empty.
+    - Kept persisted nickname behavior in localStorage for subsequent joins.
+    - Confirmed board already has active users list on top and live cursors with nickname labels.
+    Result:
+    - User is asked for nickname at board entry actions and identity features remain visible on board.
+
+[8] Request: Fix bug when opening existing board via link; add accounting system to stabilize identity.
+    Changes made:
+    - Added centralized account storage utility (`lib/account.ts`) for persistent user id + nickname.
+    - Updated home page to use account utility for nickname restore and navigation identity parameters.
+    - Updated board page logic to recover account from link params or localStorage, and prompt nickname only if truly missing.
+    Result:
+    - Direct board links no longer fail repeatedly with nickname-required error when account data already exists.
+
+[9] Request: Assign random color to each user for cursor and nickname; add random animal emoji (except monkey) next to top user nicknames.
+    Changes made:
+    - Added user metadata fields for `cursorColor` and `animalEmoji` in realtime protocol.
+    - Server now assigns random color + random animal emoji on board join (emoji pool excludes monkey).
+    - Board header user chips now show `emoji + nickname` styled with each user's assigned color.
+    - Remote cursor dot and cursor nickname label now use each user's assigned color.
+    Result:
+    - Each user is visually identifiable by random color and animal emoji, without affecting drawing stroke color.

@@ -3,10 +3,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
-import type { DrawMode, DrawSegment, JoinBoardResponse, Point } from "@/lib/protocol";
+import { readStoredAccount, saveAccount, type CollBrushAccount } from "@/lib/account";
+import type {
+  BoardUser,
+  CursorState,
+  DrawMode,
+  DrawSegment,
+  JoinBoardResponse,
+  Point,
+} from "@/lib/protocol";
 
 type CollaborativeBoardProps = {
   boardId: string;
+  userId: string;
+  nickname: string;
 };
 
 const clamp = (value: number, min: number, max: number) =>
@@ -27,23 +37,27 @@ const drawSegmentOnContext = (ctx: CanvasRenderingContext2D, segment: DrawSegmen
   ctx.restore();
 };
 
-export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps) {
+export default function CollaborativeBoard({ boardId, userId, nickname }: CollaborativeBoardProps) {
   const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const segmentsRef = useRef<DrawSegment[]>([]);
+  const lastCursorEmitRef = useRef(0);
 
   const isDrawingRef = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
   const previousPointRef = useRef<Point | null>(null);
 
   const [usersCount, setUsersCount] = useState(1);
+  const [boardUsers, setBoardUsers] = useState<BoardUser[]>([]);
+  const [remoteCursors, setRemoteCursors] = useState<Record<string, CursorState>>({});
   const [color, setColor] = useState("#111827");
   const [brushSize, setBrushSize] = useState(4);
   const [mode, setMode] = useState<DrawMode>("draw");
   const [joinError, setJoinError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [account, setAccount] = useState<CollBrushAccount | null>(null);
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -52,6 +66,35 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
 
     return `${window.location.origin}/board/${boardId}`;
   }, [boardId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const paramUserId = userId.trim().slice(0, 80);
+    const paramNickname = nickname.trim().slice(0, 40);
+    const stored = readStoredAccount();
+
+    const nextUserId = paramUserId || stored?.userId || "";
+    let nextNickname = paramNickname || stored?.nickname || "";
+
+    if (!nextNickname) {
+      nextNickname = window.prompt("Enter your nickname", "")?.trim().slice(0, 40) ?? "";
+    }
+
+    if (!nextNickname) {
+      router.replace("/?error=login-required");
+      return;
+    }
+
+    const nextAccount = saveAccount({
+      userId: nextUserId,
+      nickname: nextNickname,
+    });
+
+    setAccount(nextAccount);
+  }, [nickname, router, userId]);
 
   const getCanvasPoint = useCallback((event: PointerEvent | React.PointerEvent<HTMLCanvasElement>): Point | null => {
     const canvas = canvasRef.current;
@@ -163,6 +206,10 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
   }, [resizeCanvas]);
 
   useEffect(() => {
+    if (!account) {
+      return;
+    }
+
     const socket = io({
       path: "/socket.io",
       transports: ["websocket", "polling"],
@@ -173,14 +220,15 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
     socket.on("connect", () => {
       setIsConnected(true);
 
-      socket.emit("join-board", boardId, (response: JoinBoardResponse) => {
+      socket.emit("join-board", { boardId, userId: account.userId, nickname: account.nickname }, (response: JoinBoardResponse) => {
         if (!response.ok) {
-          const normalizedReason = response.reason.trim().toLowerCase();
-          if (
-            normalizedReason === "this board is full" ||
-            normalizedReason.includes("board is full")
-          ) {
+          if (response.code === "BOARD_FULL") {
             router.replace("/?error=board-full");
+            return;
+          }
+
+          if (response.code === "INVALID_USER") {
+            router.replace("/?error=login-required");
             return;
           }
 
@@ -190,6 +238,7 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
 
         setJoinError(null);
         setUsersCount(response.usersCount);
+        setBoardUsers(response.users);
         segmentsRef.current = response.segments;
         redrawFromSegments();
       });
@@ -199,12 +248,43 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
       setIsConnected(false);
     });
 
-    socket.on("presence", ({ usersCount: nextUsersCount }: { usersCount: number }) => {
+    socket.on("presence", ({ usersCount: nextUsersCount, users }: { usersCount: number; users: BoardUser[] }) => {
       setUsersCount(nextUsersCount);
+      setBoardUsers(users);
+      setRemoteCursors((previous) => {
+        const onlineSocketIds = new Set(users.map((user) => user.socketId));
+        const next: Record<string, CursorState> = {};
+        for (const [socketId, cursorState] of Object.entries(previous)) {
+          if (onlineSocketIds.has(socketId)) {
+            next[socketId] = cursorState;
+          }
+        }
+
+        return next;
+      });
     });
 
     socket.on("draw-segment", (segment: DrawSegment) => {
       applySegment(segment, true);
+    });
+
+    socket.on("cursor-move", (cursorState: CursorState) => {
+      setRemoteCursors((previous) => ({
+        ...previous,
+        [cursorState.socketId]: cursorState,
+      }));
+    });
+
+    socket.on("cursor-leave", ({ socketId }: { socketId: string }) => {
+      setRemoteCursors((previous) => {
+        if (!previous[socketId]) {
+          return previous;
+        }
+
+        const next = { ...previous };
+        delete next[socketId];
+        return next;
+      });
     });
 
     socket.on("clear-board", () => {
@@ -214,7 +294,7 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
     return () => {
       socket.disconnect();
     };
-  }, [applySegment, boardId, handleClear, redrawFromSegments, router]);
+  }, [account, applySegment, boardId, handleClear, redrawFromSegments, router]);
 
   const startDrawing = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (joinError) {
@@ -238,6 +318,23 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
   };
 
   const continueDrawing = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const now = Date.now();
+    if (now - lastCursorEmitRef.current >= 24) {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          const normalizedX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+          const normalizedY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+          socketRef.current?.emit("cursor-move", {
+            x: normalizedX,
+            y: normalizedY,
+          });
+          lastCursorEmitRef.current = now;
+        }
+      }
+    }
+
     if (!isDrawingRef.current || pointerIdRef.current !== event.pointerId) {
       return;
     }
@@ -277,6 +374,25 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
     socketRef.current?.emit("clear-board");
   };
 
+  const emitCursorOnEnter = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    const normalizedX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const normalizedY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+    socketRef.current?.emit("cursor-move", {
+      x: normalizedX,
+      y: normalizedY,
+    });
+  };
+
   return (
     <div className="flex min-h-screen w-full flex-col bg-zinc-100 text-zinc-900">
       <header className="border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-6">
@@ -286,6 +402,20 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
             <p className="text-sm text-zinc-500">
               Board: <span className="font-medium text-zinc-700">{boardId}</span> · {usersCount}/10 online
             </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {boardUsers.map((user) => (
+                <span
+                  key={user.socketId}
+                  className="rounded-full border bg-white px-2 py-0.5 text-xs font-medium"
+                  style={{
+                    color: user.cursorColor,
+                    borderColor: user.cursorColor,
+                  }}
+                >
+                  {user.animalEmoji} {user.nickname}
+                </span>
+              ))}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -375,7 +505,33 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
             onPointerUp={stopDrawing}
             onPointerLeave={stopDrawing}
             onPointerCancel={stopDrawing}
+            onPointerEnter={emitCursorOnEnter}
           />
+          {Object.values(remoteCursors).map((cursorState) => (
+            <div
+              key={cursorState.socketId}
+              className="pointer-events-none absolute z-10"
+              style={{
+                left: `${cursorState.x * 100}%`,
+                top: `${cursorState.y * 100}%`,
+                transform: "translate(8px, 8px)",
+              }}
+            >
+              <div
+                className="h-2.5 w-2.5 rounded-full ring-2 ring-white"
+                style={{ backgroundColor: cursorState.cursorColor }}
+              />
+              <div
+                className="mt-1 rounded border bg-white px-1.5 py-0.5 text-xs font-medium"
+                style={{
+                  color: cursorState.cursorColor,
+                  borderColor: cursorState.cursorColor,
+                }}
+              >
+                {cursorState.nickname}
+              </div>
+            </div>
+          ))}
           {joinError ? (
             <div className="absolute inset-0 grid place-items-center bg-white/80 text-center text-sm font-medium text-red-600">
               {joinError}
