@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import type { DrawMode, DrawSegment, JoinBoardResponse, Point } from "@/lib/protocol";
 
@@ -29,6 +30,7 @@ const drawSegmentOnContext = (ctx: CanvasRenderingContext2D, segment: DrawSegmen
 };
 
 export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps) {
+  const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -175,6 +177,15 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
 
       socket.emit("join-board", boardId, (response: JoinBoardResponse) => {
         if (!response.ok) {
+          const normalizedReason = response.reason.trim().toLowerCase();
+          if (
+            normalizedReason === "this board is full" ||
+            normalizedReason.includes("board is full")
+          ) {
+            router.replace("/?error=board-full");
+            return;
+          }
+
           setJoinError(response.reason);
           return;
         }
@@ -205,7 +216,7 @@ export default function CollaborativeBoard({ boardId }: CollaborativeBoardProps)
     return () => {
       socket.disconnect();
     };
-  }, [applySegment, boardId, handleClear, redrawFromSegments]);
+  }, [applySegment, boardId, handleClear, redrawFromSegments, router]);
 
   const startDrawing = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (joinError) {

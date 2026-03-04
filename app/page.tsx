@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const createBoardId = () => {
   const randomChunk = Math.random().toString(36).slice(2, 6);
@@ -10,7 +10,9 @@ const createBoardId = () => {
 
 export default function Home() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [boardId, setBoardId] = useState("");
+  const fullBoardError = searchParams.get("error") === "board-full";
 
   const goToBoard = (nextBoardId: string) => {
     const sanitized = nextBoardId.trim().slice(0, 80);
@@ -33,6 +35,11 @@ export default function Home() {
         <p className="mt-2 text-sm text-zinc-600">
           Real-time collaborative paint board. Share a board link and draw together (up to 10 users per board).
         </p>
+        {fullBoardError ? (
+          <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+            This Board is full
+          </p>
+        ) : null}
 
         <form className="mt-6 space-y-3" onSubmit={onSubmit}>
           <label className="block text-sm font-medium text-zinc-700" htmlFor="boardId">

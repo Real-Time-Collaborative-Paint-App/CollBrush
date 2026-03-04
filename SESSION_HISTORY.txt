@@ -26,3 +26,11 @@ Date: 2026-03-04
     - Added automatic stale lock cleanup in npm dev script before starting server.
     Result:
     - `npm run dev` launches successfully and serves on port 3000.
+
+[4] Request: 11th user should see "This Board is full" and be rerouted to main page.
+    Changes made:
+    - Server join-board rejection message changed to exactly: "This Board is full".
+    - Board client now checks that rejection reason and redirects to `/?error=board-full`.
+    - Home page now reads `error` query param and displays "This Board is full" message.
+    Result:
+    - Any user above the 10-user limit is denied, redirected to main page, and sees the required error text.

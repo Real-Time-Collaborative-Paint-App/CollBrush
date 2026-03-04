@@ -96,7 +96,7 @@ void app.prepare().then(() => {
       if (board.users.size >= MAX_USERS_PER_BOARD) {
         callback({
           ok: false,
-          reason: `Board is full (max ${MAX_USERS_PER_BOARD} users).`,
+          reason: "This Board is full",
         });
         return;
       }
