@@ -7,6 +7,7 @@ import type {
   CursorMovePayload,
   CursorState,
   FillAction,
+  ReplaceCanvasAction,
   DrawSegment,
   JoinBoardRequest,
   JoinBoardResponse,
@@ -222,6 +223,40 @@ void app.prepare().then(() => {
       }
 
       socket.to(boardId).emit("fill-area", fill);
+    });
+
+    socket.on("replace-canvas", (replace: ReplaceCanvasAction) => {
+      const boardId = socket.data.boardId as string | undefined;
+      if (!boardId) {
+        return;
+      }
+
+      const board = boards.get(boardId);
+      if (!board) {
+        return;
+      }
+
+      board.actions = [
+        {
+          type: "replace",
+          replace,
+        },
+      ];
+
+      socket.to(boardId).emit("replace-canvas", replace);
+    });
+
+    socket.on("replace-canvas-preview", (replace: ReplaceCanvasAction) => {
+      const boardId = socket.data.boardId as string | undefined;
+      if (!boardId) {
+        return;
+      }
+
+      if (!boards.has(boardId)) {
+        return;
+      }
+
+      socket.to(boardId).emit("replace-canvas-preview", replace);
     });
 
     socket.on("cursor-move", (payload: CursorMovePayload) => {

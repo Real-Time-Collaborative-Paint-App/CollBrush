@@ -86,3 +86,34 @@ Date: 2026-03-04
     - Migrated board history from only segments to a unified action stream (segments + fills) so new users replay full board state correctly.
     Result:
     - Bucket tool works collaboratively like Paint fill and all tools now have emoji icons.
+
+[11] Request: Add Select tool (move/delete selected area) and Color Picker tool like Microsoft Paint.
+    Changes made:
+    - Added new tools: 🔲 Select and 🎨 Picker in toolbar.
+    - Implemented eyedropper behavior: click canvas to pick pixel color and switch back to draw mode.
+    - Implemented marquee selection with move support by dragging selected area.
+    - Implemented selection delete using keyboard Delete/Backspace.
+    - Added collaborative `replace-canvas` action/event so selection move/delete changes sync to all users.
+    - Extended action history model to include replace-canvas snapshots alongside draw/fill actions.
+    Result:
+    - Users can select/move/delete regions and pick colors from canvas, with selection edits synchronized board-wide.
+
+[12] Request: Make selected-area move visible to other users in real-time and smooth.
+    Changes made:
+    - Added `replace-canvas-preview` realtime event on server for non-persistent live move previews.
+    - During selection drag, canvas now updates every pointer move using cached base image + selected image block.
+    - Selection movement now emits throttled preview snapshots (~25 FPS) so other users see motion live.
+    - Final drop still commits a persistent `replace-canvas` snapshot for canonical board state/history.
+    Result:
+    - Other users now see selected area moving in real time, with smoother synced movement.
+
+[13] Request: Implement Ctrl+Z and Ctrl+Y/Ctrl+Shift+Z (undo/redo).
+        Changes made:
+        - Added local snapshot history stacks (`undo`/`redo`) based on before/after canvas data URLs.
+        - Bound keyboard shortcuts:
+            - Ctrl+Z => undo last local action
+            - Ctrl+Y or Ctrl+Shift+Z => redo last undone action
+        - Undo/redo actions are synced to all users by broadcasting `replace-canvas` snapshots.
+        - Integrated history tracking for draw/erase strokes, bucket fill, selection move, selection delete, and clear.
+        Result:
+        - Users can revert and re-apply their recent actions with standard keyboard shortcuts.

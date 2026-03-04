@@ -18,9 +18,14 @@ export interface FillAction {
   color: string;
 }
 
+export interface ReplaceCanvasAction {
+  dataUrl: string;
+}
+
 export type BoardAction =
   | { type: "segment"; segment: DrawSegment }
-  | { type: "fill"; fill: FillAction };
+  | { type: "fill"; fill: FillAction }
+  | { type: "replace"; replace: ReplaceCanvasAction };
 
 export interface BoardUser {
   socketId: string;
