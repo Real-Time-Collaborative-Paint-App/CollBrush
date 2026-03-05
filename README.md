@@ -68,8 +68,9 @@ Troubleshooting:
 
 - Session change log is stored in `SESSION_HISTORY.txt` at the project root.
 
-## Well-known Issues
+## Known Issues
 
 - Bottle tool lacks synchronization
 - Bottle in Bottle tool doesnt point to the winner
 - Coin flip tool lacks visual appeal
+-Screenshot selection area sometimes doesnt work
