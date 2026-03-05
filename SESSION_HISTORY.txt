@@ -483,3 +483,285 @@ Date: 2026-03-04
                 - Users can paste image files/screenshots with `Ctrl+V`.
                 - Users can right-click and upload images from computer.
                 - Users have cut/copy/paste actions in RMB menu with emoji icons.
+
+            [45] Request: Disallow pasting a link into Board ID input on the main screen.
+                Changes made:
+                - Added board-link detection helper for home page Board ID input (`http://`, `https://`, `www.`, `/board/`).
+                - Added `onPaste` guard on Board ID input to block pasted links and show an inline error.
+                - Added join-time fallback validation to reject board-link values even if typed manually.
+                - Added inline error message under Board ID input for invalid link input.
+                Result:
+                - Users can no longer paste board links into Board ID field; only plain board IDs are accepted.
+
+            [46] Request: Add "View my boards" screen with board previews, rename support, max 5 boards per user, and create-limit message.
+                Changes made:
+                - Added new local board storage utility `lib/boards.ts` for per-user board registry:
+                    - stores up to 5 boards per user,
+                    - board id,
+                    - board name,
+                    - updated timestamp,
+                    - preview image data URL.
+                - Home page updates (`app/page.tsx`):
+                    - Added `🗂️ View my boards` button that routes to `/my-boards`.
+                    - Added create-board limit enforcement using user board registry.
+                    - If user already has 5 boards, create action is blocked and shows:
+                      `You have 5 boards already - delete one to create new`.
+                    - Successful create now registers the new board in user board storage.
+                - Added new page `app/my-boards/page.tsx`:
+                    - Shows user boards list with content previews.
+                    - Allows opening a board.
+                    - Allows renaming board names (edit input, saves on blur).
+                    - Allows deleting boards from list.
+                - Board editor updates (`components/CollaborativeBoard.tsx`):
+                    - Added periodic board preview persistence for tracked boards.
+                    - Previews are generated from composed board canvas and saved to user board registry.
+                Result:
+                - Users can open a dedicated "My boards" list with board previews.
+                - Users can rename and delete boards in that list.
+                - One user is limited to 5 saved boards; creating a 6th is blocked with the requested message.
+
+            [47] Request: Ensure any created board that user modifies is saved to "My boards".
+                Changes made:
+                - Added local dirty-state tracking in board editor to detect user-made changes.
+                - Board preview persistence now runs only when board has local edits.
+                - Removed prior requirement that board must already exist in storage before preview save.
+                - Changed preview save to auto-upsert board entry by `boardId` when edited, preserving existing custom name when present.
+                - Marked board dirty on:
+                    - local canvas/history commits,
+                    - local object upserts,
+                    - local object removals.
+                Result:
+                - Any board a user changes is automatically added/updated in "My boards" with current preview.
+
+            [48] Request: Fix board changes not being saved between sessions.
+                Changes made:
+                - Added server-side persistent storage in `server.ts` using JSON file on disk (`.data/boards.json`).
+                - Implemented board state serialization/deserialization for actions + objects.
+                - Added startup load of persisted boards so saved board content is available after server restart.
+                - Added debounced persistence writes for board mutations:
+                    - draw segment,
+                    - fill,
+                    - replace canvas,
+                    - object upsert/remove,
+                    - clear board,
+                    - board cleanup deletion.
+                - Updated empty-room cleanup logic to keep non-empty boards in memory (and persisted), deleting only truly empty boards.
+                Result:
+                - Board content now persists across sessions/server restarts instead of resetting when in-memory state is lost.
+
+            [49] Request: Fix bug removing all boards from My Boards and board progress after rejoin.
+                Changes made:
+                - Fixed account persistence in `lib/account.ts`:
+                    - `saveAccount` now reuses existing `userId` when `userId` is not provided,
+                    - prevents unintended user-id regeneration on routine saves,
+                    - preserves existing nickname when new nickname is empty.
+                - Hardened server persistence in `server.ts`:
+                    - added queued persistence writes,
+                    - added explicit flush of pending board writes on socket disconnect,
+                    - added process shutdown (`SIGINT`/`SIGTERM`) flush before exit.
+                Result:
+                - `My Boards` no longer appears to reset due user identity switching.
+                - Board progress is much less likely to be lost when leaving/rejoining or restarting server.
+
+            [50] Request: Ensure board progress remains after rejoin and show all users currently using board.
+                Changes made:
+                - Further hardened server persistence writes to be atomic in `server.ts`:
+                    - write to temp file (`.data/boards.json.tmp`) then rename to `.data/boards.json`.
+                - Updated board header user section in `components/CollaborativeBoard.tsx`:
+                    - added explicit `Online users` label,
+                    - renders all active user chips,
+                    - shows fallback chip when no users are online.
+                Result:
+                - Board persistence is more robust against partial/corrupt writes.
+                - Active board participants are clearly visible in the UI.
+
+            [51] Request: Update board preview to current state, ask for board name on create, and fix board clearing when everyone leaves.
+                Changes made:
+                - Home create flow (`app/page.tsx`) now prompts for board name before creating a new board.
+                - Saved board entry now uses prompted board name (creation cancels if name prompt is cancelled/empty).
+                - Board preview update triggers in `components/CollaborativeBoard.tsx` now mark preview dirty on:
+                    - initial board join state load,
+                    - incoming draw/fill/replace/object/clear events.
+                - This keeps My Boards previews aligned with current collaborative board state.
+                - Updated `server.ts` empty-board cleanup behavior to stop deleting board records when users leave.
+                Result:
+                - New boards are named by user at creation.
+                - Board previews stay up to date with latest board content.
+                - Boards no longer get cleared simply because everyone disconnected.
+
+            [52] Request: Fix React error about useEffect dependency array size changing between renders.
+                Changes made:
+                - Updated socket/join synchronization effect in `components/CollaborativeBoard.tsx` to avoid capturing `markBoardDirty` callback in the dependency list.
+                - Replaced `markBoardDirty()` calls inside that effect with direct `boardDirtyRef.current = true` assignments.
+                - Removed `markBoardDirty` from that effect dependency array.
+                Result:
+                - Effect dependency array length remains stable across renders/Fast Refresh.
+                - Console error about final argument size change is resolved.
+
+            [53] Request: Ensure board progress saves between sessions.
+                Changes made:
+                - Fixed server persistence write path in `server.ts` for Windows compatibility.
+                - Atomic temp-file replace now handles rename collisions (`EEXIST`/`EPERM`) by removing old target file and retrying rename.
+                Result:
+                - Board state file updates reliably on Windows.
+                - Rejoining existing boards after session restart now keeps saved progress consistently.
+
+            [54] Request: Prior persistence fix still not working; explain and fix.
+                Root cause identified:
+                - Previous write path still depended on temp-file rename success.
+                - On Windows, rename/replace behavior can fail in additional lock scenarios, causing persistence to silently fail in practice.
+                Changes made:
+                - Updated `server.ts` persistence logic to guarantee fallback write:
+                    - write temp file first,
+                    - try atomic rename,
+                    - if rename fails, directly write final file (`boards.json`) as fallback,
+                    - cleanup temp file best-effort.
+                - Added startup recovery read path:
+                    - if loading `boards.json` fails, attempt loading `boards.json.tmp`.
+                Result:
+                - Board progress persistence now no longer depends solely on rename success.
+                - Rejoin/session restore works reliably even under Windows file-lock edge cases.
+
+            [55] Request: Add `Hooray` confetti button with emoji to RMB context menu.
+                Changes made:
+                - Added new RMB context menu action: `🎉 Hooray`.
+                - Implemented animated party popper effect at click location.
+                - Added multi-piece confetti burst overlay that shoots across the board area.
+                - Confetti and popper animation auto-disappear after a short duration.
+                - Added cleanup of pending confetti timeouts on component unmount.
+                Result:
+                - Right-click menu now includes a celebratory confetti action that visually pops and fades away.
+
+            [56] Request: Add `Sharknado` button to RMB context menu with shark tornado animation.
+                Changes made:
+                - Added new RMB context menu action: `🦈🌪️ Sharknado`.
+                - Implemented animated shark-tornado overlay with swirling shark emojis around a tornado core.
+                - Sharknado effect auto-disappears after a short duration and reuses timeout cleanup flow.
+                - Increased context menu vertical sizing logic to keep menu inside board viewport with new action item.
+                Result:
+                - Right-click menu now includes Sharknado effect that creates a temporary small tornado made of shark emojis.
+
+            [57] Request: Fix Sharknado so sharks orbit the tornado.
+                Changes made:
+                - Reworked shark animation transform chain to use true orbit wrappers.
+                - Each shark now rotates around tornado center while its own offset radius/scale is applied in inner element.
+                - Removed prior direct translate+rotate drift combination that prevented clean orbital motion.
+                Result:
+                - Sharks now visibly orbit around the tornado core as intended.
+
+            [58] Request: Rework Sharknado to tornado-like orbit with changing size/visibility.
+                Changes made:
+                - Expanded shark particle model with staged orbit radii, scale phases, and vertical lift.
+                - Rewrote sharknado keyframes into multi-phase spiral motion:
+                    - near radius start,
+                    - wider mid/far orbit,
+                    - narrowing exit,
+                    - upward lift over lifetime.
+                - Added dynamic opacity and scale transitions across animation phases to create depth/visibility illusion.
+                - Increased shark count and staggered timings for denser tornado feel.
+                Result:
+                - Shark emojis now move in a clear tornado pattern and visually appear to orbit around the tornado emoji with changing size and visibility.
+
+            [59] Request: Change Sharknado from top-view orbit to side-view and increase tornado emoji size.
+                Changes made:
+                - Reworked shark motion model to side-view tornado lanes:
+                    - per-shark vertical lane offset,
+                    - horizontal sway path,
+                    - upward drift over lifetime.
+                - Updated shark keyframes to mimic front/back pass in side profile using opacity and scale phase shifts.
+                - Increased tornado core emoji size from `text-3xl` to `text-6xl` and tuned core scale animation.
+                Result:
+                - Sharknado now reads as a side-view tornado with sharks circulating around the column.
+                - Tornado emoji is significantly larger and more prominent.
+
+            [60] Request: Make Sharknado last longer, increase spin diameter, and remove initial static shark.
+                Changes made:
+                - Increased Sharknado lifetime and per-shark animation duration.
+                - Increased shark sway/drift ranges to widen effective spin diameter.
+                - Extended tornado core animation duration to match longer effect.
+                - Removed static pre-animation shark appearance by:
+                    - forcing initial shark opacity to 0,
+                    - switching shark animation fill mode to `both` (applies 0% state during delay).
+                Result:
+                - Sharknado stays visible longer, spins in a wider column, and no longer shows a static shark at start.
+
+            [61] Request: Increase shark spin speed, keep spinning longer, and make some sharks fly far away randomly.
+                Changes made:
+                - Increased spin speed by reducing per-shark spin duration and stagger delay.
+                - Increased overall Sharknado lifetime window and tornado core animation duration.
+                - Added new breakaway shark particle set with random vectors, rotations, delays, and distances.
+                - Added `cb-sharknado-breakaway` animation for far random launch motion.
+                Result:
+                - Sharks spin faster while effect remains visible for longer.
+                - Additional sharks now peel off and fly far away in random directions.
+
+            [62] Request: Make tornado disappear faster, make sharks 2x faster, and move all emojis randomly but synchronically.
+                Changes made:
+                - Doubled shark spin speed by approximately halving spin durations and stagger delays.
+                - Sped up breakaway shark motion timings accordingly.
+                - Made tornado core disappear much faster by shortening core animation duration and reducing lingering end transform.
+                - Added synchronized random group wobble animation (`cb-sharknado-wobble`) applied to entire Sharknado burst.
+                - Each burst gets random wobble amplitude/speed so all emojis in that burst move together while still feeling organic.
+                Result:
+                - Tornado emoji fades out faster.
+                - Shark emojis spin significantly faster.
+                - Whole Sharknado motion now has synchronized random movement closer to a real chaotic tornado.
+
+            [63] Request: Add RMB Coinflip action with animation and result text held for 2 seconds.
+                Changes made:
+                - Added new RMB context menu action: `🪙 Coinflip`.
+                - Implemented animated coin flip overlay (`cb-coinflip-spin`) with randomized Heads/Tails result.
+                - Added result badge text (`🪙 Heads` / `🪙 Tails`) with delayed reveal and timed fade-out.
+                - Result display is held on-screen for ~2 seconds after flip resolution, then disappears with animation.
+                - Updated context menu bounds height to fit the additional action entry.
+                Result:
+                - Right-click menu now supports coinflip animation with clear result text that auto-disappears after the hold period.
+
+            [64] Request: Make coin spin horizontally and make heads/tails different.
+                Changes made:
+                - Switched coin flip axis from vertical (`rotateY`) to horizontal (`rotateX`) in coinflip keyframes.
+                - Added two distinct 3D coin faces:
+                    - front face `H` (heads style),
+                    - back face `T` (tails style).
+                - Coin now lands on a deterministic final rotation based on random result (`Heads` => 0°, `Tails` => 180°).
+                - Updated result badge to visually differentiate outcomes:
+                    - `👑 Heads`
+                    - `🦅 Tails`
+                Result:
+                - Coin now flips horizontally and heads/tails are clearly distinct in both animation and result text.
+
+            [65] Request: Make coin spin around center, show result only after spin stops, and use only coin emoji.
+                Changes made:
+                - Simplified coin visual to single `🪙` emoji (removed custom H/T face layers).
+                - Ensured center pivot spinning with explicit centered transform origin.
+                - Kept horizontal-axis spin (`rotateX`) and adjusted timing.
+                - Delayed result text animation start until after coin spin ends.
+                Result:
+                - Coin flips as a centered emoji-only animation.
+                - Heads/Tails text appears only after spinning completes.
+
+            [66] Request: Make heads/tails truly random, keep axis at center, and remove result text at animation start.
+                Changes made:
+                - Switched coin result generation to crypto-backed random bit (`crypto.getRandomValues`) with fallback.
+                - Restored result-linked final coin rotation (`Heads` => 0°, `Tails` => 180°) for consistent landing behavior.
+                - Strengthened center-axis rendering by using fixed centered coin container (`h-16 w-16`, centered transform origin).
+                - Forced result badge hidden state before reveal (`opacity: 0`) and set animation fill mode to `both`.
+                Result:
+                - Heads/Tails outcome is generated from stronger randomness source.
+                - Coin rotates around the middle reliably.
+                - Result text no longer appears at the beginning of coin animation.
+
+            [67] Request: Make coin stop at exact start orientation and spin vertically.
+                Changes made:
+                - Switched coin flip animation axis from `rotateX` back to `rotateY` (vertical spin).
+                - Removed end-rotation offset logic from coinflip state.
+                - Set final keyframe to full-turn multiple (`rotateY(1440deg)`) so coin ends exactly where it started.
+                Result:
+                - Coin now spins vertically and lands in the exact same orientation as initial frame.
+
+            [68] Request: Keep coin spinning without changing coordinates during animation.
+                Changes made:
+                - Updated `cb-coinflip-spin` final keyframe to remove vertical translation drift.
+                - Coin spin now uses constant position (`translateY(0)` at both start/end).
+                Result:
+                - Coin rotates in place and no longer shifts coordinates while animating.

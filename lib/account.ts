@@ -35,8 +35,9 @@ export const readStoredAccount = (): CollBrushAccount | null => {
 };
 
 export const saveAccount = (input: Partial<CollBrushAccount>): CollBrushAccount => {
-  const userId = clampText(input.userId ?? "", 80) || generateUserId();
-  const nickname = clampText(input.nickname ?? "", 40);
+  const existing = readStoredAccount();
+  const userId = clampText(input.userId ?? "", 80) || existing?.userId || generateUserId();
+  const nickname = clampText(input.nickname ?? "", 40) || existing?.nickname || "";
 
   const account: CollBrushAccount = {
     userId,

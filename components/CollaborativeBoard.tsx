@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { readStoredAccount, saveAccount } from "@/lib/account";
+import { readStoredBoards, upsertStoredBoard } from "@/lib/boards";
 import type {
   BoardAction,
   BoardObject,
@@ -91,6 +92,63 @@ type SelectionTransformSession = {
   affectedObjects: BoardObject[];
 };
 
+type ConfettiPiece = {
+  id: string;
+  dx: number;
+  dy: number;
+  rotation: number;
+  duration: number;
+  delay: number;
+  colorClass: string;
+};
+
+type ConfettiBurst = {
+  id: string;
+  x: number;
+  y: number;
+  pieces: ConfettiPiece[];
+};
+
+type SharknadoShark = {
+  id: string;
+  lane: number;
+  sway: number;
+  startScale: number;
+  peakScale: number;
+  endScale: number;
+  drift: number;
+  delay: number;
+  duration: number;
+};
+
+type SharknadoBreakaway = {
+  id: string;
+  dx: number;
+  dy: number;
+  rotation: number;
+  scale: number;
+  delay: number;
+  duration: number;
+};
+
+type SharknadoBurst = {
+  id: string;
+  x: number;
+  y: number;
+  sharks: SharknadoShark[];
+  breakaways: SharknadoBreakaway[];
+  wobbleX: number;
+  wobbleY: number;
+  wobbleDuration: number;
+};
+
+type CoinflipBurst = {
+  id: string;
+  x: number;
+  y: number;
+  result: "Heads" | "Tails";
+};
+
 type WrappedTextLine = {
   text: string;
   y: number;
@@ -99,6 +157,16 @@ type WrappedTextLine = {
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
+
+const getRandomBit = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    return values[0] & 1;
+  }
+
+  return Math.random() < 0.5 ? 0 : 1;
+};
 
 const DEFAULT_TEXT_STYLE: TextStyle = {
   fontFamily: "Arial",
@@ -588,6 +656,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const remoteReplaceVersionRef = useRef(0);
   const undoStackRef = useRef<SnapshotHistoryEntry[]>([]);
   const redoStackRef = useRef<SnapshotHistoryEntry[]>([]);
+  const boardDirtyRef = useRef(false);
   const strokeStartSnapshotRef = useRef<string | null>(null);
   const strokeChangedRef = useRef(false);
   const selectionMoveStartSnapshotRef = useRef<string | null>(null);
@@ -607,6 +676,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const uploadImageInputRef = useRef<HTMLInputElement | null>(null);
   const copiedCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastContextMenuPointRef = useRef<Point | null>(null);
+  const confettiTimeoutsRef = useRef<number[]>([]);
   const selectionTransformSessionRef = useRef<SelectionTransformSession | null>(null);
   const zoomHoldTimeoutRef = useRef<number | null>(null);
   const zoomHoldIntervalRef = useRef<number | null>(null);
@@ -647,6 +717,9 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [screenshotMenuOpen, setScreenshotMenuOpen] = useState(false);
   const [pendingScreenshotSelection, setPendingScreenshotSelection] = useState(false);
   const [contextMenuState, setContextMenuState] = useState<{ x: number; y: number } | null>(null);
+  const [confettiBursts, setConfettiBursts] = useState<ConfettiBurst[]>([]);
+  const [sharknadoBursts, setSharknadoBursts] = useState<SharknadoBurst[]>([]);
+  const [coinflipBursts, setCoinflipBursts] = useState<CoinflipBurst[]>([]);
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -687,6 +760,103 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
   const closeBoardContextMenu = useCallback(() => {
     setContextMenuState(null);
+  }, []);
+
+  const launchConfetti = useCallback((x: number, y: number) => {
+    const burstId = `confetti-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const colorClasses = [
+      "bg-blue-500",
+      "bg-emerald-500",
+      "bg-amber-500",
+      "bg-rose-500",
+      "bg-violet-500",
+      "bg-cyan-500",
+    ];
+
+    const pieces: ConfettiPiece[] = Array.from({ length: 44 }, (_, index) => {
+      const distance = 60 + Math.random() * 260;
+      const angle = (Math.PI * 2 * index) / 44 + Math.random() * 0.45;
+      return {
+        id: `${burstId}-${index}`,
+        dx: Math.cos(angle) * distance,
+        dy: Math.sin(angle) * distance - (80 + Math.random() * 100),
+        rotation: -420 + Math.random() * 840,
+        duration: 760 + Math.random() * 540,
+        delay: Math.random() * 140,
+        colorClass: colorClasses[Math.floor(Math.random() * colorClasses.length)],
+      };
+    });
+
+    setConfettiBursts((previous) => [...previous, { id: burstId, x, y, pieces }]);
+    const timeoutId = window.setTimeout(() => {
+      setConfettiBursts((previous) => previous.filter((burst) => burst.id !== burstId));
+      confettiTimeoutsRef.current = confettiTimeoutsRef.current.filter((id) => id !== timeoutId);
+    }, 1800);
+    confettiTimeoutsRef.current.push(timeoutId);
+  }, []);
+
+  const launchSharknado = useCallback((x: number, y: number) => {
+    const burstId = `sharknado-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const sharks: SharknadoShark[] = Array.from({ length: 16 }, (_, index) => ({
+      id: `${burstId}-${index}`,
+      lane: -46 + index * 6.4,
+      sway: 44 + Math.random() * 34,
+      startScale: 0.48 + Math.random() * 0.18,
+      peakScale: 1.02 + Math.random() * 0.22,
+      endScale: 0.56 + Math.random() * 0.2,
+      drift: 76 + Math.random() * 46,
+      delay: index * 11,
+      duration: 550 + Math.random() * 260,
+    }));
+
+    const breakaways: SharknadoBreakaway[] = Array.from({ length: 6 }, (_, index) => {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 220 + Math.random() * 360;
+      return {
+        id: `${burstId}-breakaway-${index}`,
+        dx: Math.cos(angle) * distance,
+        dy: Math.sin(angle) * distance - (40 + Math.random() * 220),
+        rotation: -540 + Math.random() * 1080,
+        scale: 0.7 + Math.random() * 0.5,
+        delay: 120 + Math.random() * 320,
+        duration: 460 + Math.random() * 340,
+      };
+    });
+
+    setSharknadoBursts((previous) => [
+      ...previous,
+      {
+        id: burstId,
+        x,
+        y,
+        sharks,
+        breakaways,
+        wobbleX: 10 + Math.random() * 12,
+        wobbleY: 7 + Math.random() * 10,
+        wobbleDuration: 360 + Math.random() * 260,
+      },
+    ]);
+    const timeoutId = window.setTimeout(() => {
+      setSharknadoBursts((previous) => previous.filter((burst) => burst.id !== burstId));
+      confettiTimeoutsRef.current = confettiTimeoutsRef.current.filter((id) => id !== timeoutId);
+    }, 4200);
+    confettiTimeoutsRef.current.push(timeoutId);
+  }, []);
+
+  const launchCoinflip = useCallback((x: number, y: number) => {
+    const burstId = `coinflip-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const result: "Heads" | "Tails" = getRandomBit() === 0 ? "Heads" : "Tails";
+
+    setCoinflipBursts((previous) => [...previous, { id: burstId, x, y, result }]);
+    const timeoutId = window.setTimeout(() => {
+      setCoinflipBursts((previous) => previous.filter((burst) => burst.id !== burstId));
+      confettiTimeoutsRef.current = confettiTimeoutsRef.current.filter((id) => id !== timeoutId);
+    }, 3800);
+    confettiTimeoutsRef.current.push(timeoutId);
+  }, []);
+
+  const markBoardDirty = useCallback(() => {
+    boardDirtyRef.current = true;
   }, []);
 
   const redrawFromActions = useCallback(async () => {
@@ -982,6 +1152,46 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     setSelectionPreviewRotation(null);
   }, []);
 
+  const persistBoardPreview = useCallback(() => {
+    if (!boardDirtyRef.current) {
+      return;
+    }
+
+    const account = readStoredAccount();
+    const safeUserId = (account?.userId || userId).trim().slice(0, 80);
+    if (!safeUserId) {
+      return;
+    }
+
+    const existing = readStoredBoards(safeUserId).find((board) => board.id === boardId);
+
+    const composed = renderBoardToCanvas();
+    if (!composed || composed.width <= 0 || composed.height <= 0) {
+      return;
+    }
+
+    const previewWidth = 360;
+    const previewHeight = Math.max(1, Math.round((composed.height / composed.width) * previewWidth));
+    const previewCanvas = document.createElement("canvas");
+    previewCanvas.width = previewWidth;
+    previewCanvas.height = previewHeight;
+    const previewCtx = previewCanvas.getContext("2d");
+    if (!previewCtx) {
+      return;
+    }
+
+    previewCtx.fillStyle = "#ffffff";
+    previewCtx.fillRect(0, 0, previewWidth, previewHeight);
+    previewCtx.drawImage(composed, 0, 0, previewWidth, previewHeight);
+
+    upsertStoredBoard(safeUserId, {
+      id: boardId,
+      name: existing?.name ?? boardId,
+      previewDataUrl: previewCanvas.toDataURL("image/jpeg", 0.82),
+    });
+    boardDirtyRef.current = false;
+  }, [boardId, renderBoardToCanvas, userId]);
+
   const upsertBoardObject = useCallback((object: BoardObject, broadcast: boolean) => {
     const normalized = normalizeBoardObject(object);
 
@@ -992,8 +1202,9 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     if (broadcast) {
       socketRef.current?.emit("upsert-object", normalized);
+      markBoardDirty();
     }
-  }, []);
+  }, [markBoardDirty]);
 
   const removeBoardObject = useCallback((id: string, broadcast: boolean) => {
     setBoardObjects((previous) => {
@@ -1008,8 +1219,9 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     if (broadcast) {
       socketRef.current?.emit("remove-object", { id });
+      markBoardDirty();
     }
-  }, []);
+  }, [markBoardDirty]);
 
   const createObjectId = useCallback(
     () =>
@@ -1024,13 +1236,14 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       return;
     }
 
+    markBoardDirty();
     undoStackRef.current.push(entry);
     if (undoStackRef.current.length > 50) {
       undoStackRef.current.splice(0, undoStackRef.current.length - 50);
     }
 
     redoStackRef.current = [];
-  }, []);
+  }, [markBoardDirty]);
 
   const loadImageFromBlob = useCallback(async (blob: Blob) => {
     const imageUrl = URL.createObjectURL(blob);
@@ -1396,6 +1609,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
           ) as Record<string, BoardObject>,
         );
         void redrawFromActions();
+        boardDirtyRef.current = true;
       });
     });
 
@@ -1427,6 +1641,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         },
         true,
       );
+      boardDirtyRef.current = true;
     });
 
     socket.on("fill-area", (fill: FillAction) => {
@@ -1437,6 +1652,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         },
         true,
       );
+      boardDirtyRef.current = true;
     });
 
     socket.on("replace-canvas", (replace: ReplaceCanvasAction) => {
@@ -1453,6 +1669,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       movingBaseImageRef.current = null;
       movingSelectionImageRef.current = null;
       applyReplaceActionToCanvas(replace);
+      boardDirtyRef.current = true;
     });
 
     socket.on("replace-canvas-preview", (replace: ReplaceCanvasAction) => {
@@ -1461,10 +1678,12 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     socket.on("upsert-object", (object: BoardObject) => {
       upsertBoardObject(object, false);
+      boardDirtyRef.current = true;
     });
 
     socket.on("remove-object", ({ id }: { id: string }) => {
       removeBoardObject(id, false);
+      boardDirtyRef.current = true;
     });
 
     socket.on("cursor-move", (cursorState: CursorState) => {
@@ -1488,6 +1707,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     socket.on("clear-board", () => {
       handleClear();
+      boardDirtyRef.current = true;
     });
 
     return () => {
@@ -1505,6 +1725,22 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     upsertBoardObject,
     userId,
   ]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      persistBoardPreview();
+    }, 3000);
+
+    const timeoutId = window.setTimeout(() => {
+      persistBoardPreview();
+    }, 300);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.clearTimeout(timeoutId);
+      persistBoardPreview();
+    };
+  }, [persistBoardPreview]);
 
   const startDrawing = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (joinError) {
@@ -3047,6 +3283,13 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     clearZoomHold();
   }, [clearZoomHold]);
 
+  useEffect(() => () => {
+    for (const timeoutId of confettiTimeoutsRef.current) {
+      window.clearTimeout(timeoutId);
+    }
+    confettiTimeoutsRef.current = [];
+  }, []);
+
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -3349,19 +3592,26 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <p className="text-sm text-zinc-500">
               Board: <span className="font-medium text-zinc-700">{boardId}</span> · {usersCount}/10 online
             </p>
+            <p className="mt-2 text-xs font-medium uppercase tracking-wide text-zinc-500">Online users</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {boardUsers.map((user) => (
-                <span
-                  key={user.socketId}
-                  className="rounded-full border bg-white px-2 py-0.5 text-xs font-medium"
-                  style={{
-                    color: user.cursorColor,
-                    borderColor: user.cursorColor,
-                  }}
-                >
-                  {user.animalEmoji} {user.nickname}
+              {boardUsers.length > 0 ? (
+                boardUsers.map((user) => (
+                  <span
+                    key={user.socketId}
+                    className="rounded-full border bg-white px-2 py-0.5 text-xs font-medium"
+                    style={{
+                      color: user.cursorColor,
+                      borderColor: user.cursorColor,
+                    }}
+                  >
+                    {user.animalEmoji} {user.nickname}
+                  </span>
+                ))
+              ) : (
+                <span className="rounded-full border border-zinc-300 bg-white px-2 py-0.5 text-xs font-medium text-zinc-500">
+                  No users online
                 </span>
-              ))}
+              )}
             </div>
           </div>
 
@@ -3622,6 +3872,178 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             filter: blur(0);
             background: transparent;
           }
+
+          @keyframes cb-confetti-pop {
+            0% {
+              opacity: 0;
+              transform: translate(-50%, -55%) scale(0.6);
+            }
+
+            15% {
+              opacity: 1;
+              transform: translate(-50%, -50%) scale(1);
+            }
+
+            100% {
+              opacity: 0;
+              transform: translate(-50%, -72%) scale(0.9);
+            }
+          }
+
+          @keyframes cb-confetti-fall {
+            0% {
+              opacity: 1;
+              transform: translate(0, 0) rotate(0deg);
+            }
+
+            100% {
+              opacity: 0;
+              transform: translate(var(--cb-dx), var(--cb-dy)) rotate(var(--cb-rot));
+            }
+          }
+
+          @keyframes cb-sharknado-spin {
+            0% {
+              opacity: 0;
+              transform:
+                translate(-50%, -50%)
+                translateY(var(--cb-lane))
+                translateX(calc(var(--cb-sway) * -0.3))
+                scale(var(--cb-start-scale));
+            }
+
+            16% {
+              opacity: 0.42;
+              transform:
+                translate(-50%, -50%)
+                translateY(calc(var(--cb-lane) - 8px))
+                translateX(calc(var(--cb-sway) * -1))
+                scale(calc(var(--cb-start-scale) * 0.9));
+            }
+
+            46% {
+              opacity: 0.98;
+              transform:
+                translate(-50%, -50%)
+                translateY(calc(var(--cb-lane) - 18px))
+                translateX(calc(var(--cb-sway) * 0.12))
+                scale(var(--cb-peak-scale));
+            }
+
+            72% {
+              opacity: 0.45;
+              transform:
+                translate(-50%, -50%)
+                translateY(calc(var(--cb-lane) - 34px))
+                translateX(var(--cb-sway))
+                scale(calc(var(--cb-end-scale) * 0.95));
+            }
+
+            100% {
+              opacity: 0;
+              transform:
+                translate(-50%, -50%)
+                translateY(calc(var(--cb-lane) - var(--cb-drift)))
+                translateX(calc(var(--cb-sway) * -0.25))
+                scale(calc(var(--cb-end-scale) * 0.78));
+            }
+          }
+
+          @keyframes cb-sharknado-breakaway {
+            0% {
+              opacity: 0;
+              transform: translate(0, 0) rotate(0deg) scale(0.65);
+            }
+
+            12% {
+              opacity: 1;
+            }
+
+            100% {
+              opacity: 0;
+              transform:
+                translate(var(--cb-break-dx), var(--cb-break-dy))
+                rotate(var(--cb-break-rot))
+                scale(var(--cb-break-scale));
+            }
+          }
+
+          @keyframes cb-sharknado-core {
+            0% {
+              opacity: 0;
+              transform: translate(-50%, -50%) scale(0.8);
+            }
+
+            15% {
+              opacity: 1;
+              transform: translate(-50%, -50%) scale(1.12);
+            }
+
+            100% {
+              opacity: 0;
+              transform: translate(-50%, -58%) scale(1.02);
+            }
+          }
+
+          @keyframes cb-sharknado-wobble {
+            0% {
+              transform: translate(0, 0);
+            }
+
+            25% {
+              transform: translate(var(--cb-wobble-x), calc(var(--cb-wobble-y) * -1));
+            }
+
+            50% {
+              transform: translate(calc(var(--cb-wobble-x) * -0.8), calc(var(--cb-wobble-y) * -0.25));
+            }
+
+            75% {
+              transform: translate(calc(var(--cb-wobble-x) * 0.55), var(--cb-wobble-y));
+            }
+
+            100% {
+              transform: translate(0, 0);
+            }
+          }
+
+          @keyframes cb-coinflip-spin {
+            0% {
+              opacity: 0;
+              transform: translate(-50%, -50%) rotateY(0deg) translateY(0) scale(0.78);
+            }
+
+            12% {
+              opacity: 1;
+            }
+
+            100% {
+              opacity: 1;
+              transform: translate(-50%, -50%) rotateY(1440deg) translateY(0) scale(1.05);
+            }
+          }
+
+          @keyframes cb-coinflip-result {
+            0% {
+              opacity: 0;
+              transform: translate(-50%, -8px) scale(0.92);
+            }
+
+            10% {
+              opacity: 1;
+              transform: translate(-50%, 0) scale(1);
+            }
+
+            86% {
+              opacity: 1;
+              transform: translate(-50%, 0) scale(1);
+            }
+
+            100% {
+              opacity: 0;
+              transform: translate(-50%, 8px) scale(0.96);
+            }
+          }
         `}</style>
         <div className="flex items-center justify-between text-sm text-zinc-500">
           <span>{isConnected ? "Connected" : "Connecting..."}</span>
@@ -3660,13 +4082,136 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
               }
 
               const menuWidth = 180;
-              const menuHeight = 168;
+              const menuHeight = 282;
               const x = clamp(event.clientX - rect.left, 8, Math.max(8, rect.width - menuWidth));
               const y = clamp(event.clientY - rect.top, 8, Math.max(8, rect.height - menuHeight));
               lastContextMenuPointRef.current = point;
               setContextMenuState({ x, y });
             }}
           />
+
+          {coinflipBursts.map((flip) => (
+            <div key={flip.id} className="pointer-events-none absolute inset-0 z-[132] overflow-hidden">
+              <div
+                className="absolute grid h-16 w-16 select-none place-items-center text-6xl leading-none"
+                style={{
+                  left: `${flip.x}px`,
+                  top: `${flip.y}px`,
+                  animation: "cb-coinflip-spin 1.25s ease-out forwards",
+                  transformStyle: "preserve-3d",
+                  perspective: "900px",
+                  transformOrigin: "center center",
+                }}
+              >
+                🪙
+              </div>
+              <div
+                className={`absolute whitespace-nowrap rounded-full border px-3 py-1 text-xs font-semibold shadow ${
+                  flip.result === "Heads"
+                    ? "border-amber-400 bg-amber-50 text-amber-700"
+                    : "border-zinc-400 bg-zinc-100 text-zinc-700"
+                }`}
+                style={{
+                  opacity: 0,
+                  left: `${flip.x}px`,
+                  top: `${flip.y + 26}px`,
+                  animation: "cb-coinflip-result 2.15s ease-out 1.3s both",
+                }}
+              >
+                {flip.result === "Heads" ? "👑 Heads" : "🦅 Tails"}
+              </div>
+            </div>
+          ))}
+
+          {sharknadoBursts.map((burst) => (
+            <div
+              key={burst.id}
+              className="pointer-events-none absolute inset-0 z-[131] overflow-hidden"
+              style={{
+                ["--cb-wobble-x" as string]: `${burst.wobbleX}px`,
+                ["--cb-wobble-y" as string]: `${burst.wobbleY}px`,
+                animation: `cb-sharknado-wobble ${burst.wobbleDuration}ms ease-in-out infinite`,
+              }}
+            >
+              <div
+                className="absolute select-none text-6xl"
+                style={{
+                  left: `${burst.x}px`,
+                  top: `${burst.y}px`,
+                  animation: "cb-sharknado-core 1.35s ease-out forwards",
+                }}
+              >
+                🌪️
+              </div>
+              {burst.sharks.map((shark) => (
+                <span
+                  key={shark.id}
+                  className="absolute left-0 top-0 select-none text-xl"
+                  style={{
+                    opacity: 0,
+                    left: `${burst.x}px`,
+                    top: `${burst.y}px`,
+                    ["--cb-lane" as string]: `${shark.lane}px`,
+                    ["--cb-sway" as string]: `${shark.sway}px`,
+                    ["--cb-start-scale" as string]: `${shark.startScale}`,
+                    ["--cb-peak-scale" as string]: `${shark.peakScale}`,
+                    ["--cb-end-scale" as string]: `${shark.endScale}`,
+                    ["--cb-drift" as string]: `${shark.drift}px`,
+                    animation: `cb-sharknado-spin ${shark.duration}ms linear ${shark.delay}ms both`,
+                  }}
+                >
+                  🦈
+                </span>
+              ))}
+              {burst.breakaways.map((shark) => (
+                <span
+                  key={shark.id}
+                  className="absolute select-none text-2xl"
+                  style={{
+                    opacity: 0,
+                    left: `${burst.x}px`,
+                    top: `${burst.y}px`,
+                    ["--cb-break-dx" as string]: `${shark.dx}px`,
+                    ["--cb-break-dy" as string]: `${shark.dy}px`,
+                    ["--cb-break-rot" as string]: `${shark.rotation}deg`,
+                    ["--cb-break-scale" as string]: `${shark.scale}`,
+                    animation: `cb-sharknado-breakaway ${shark.duration}ms ease-out ${shark.delay}ms both`,
+                  }}
+                >
+                  🦈
+                </span>
+              ))}
+            </div>
+          ))}
+
+          {confettiBursts.map((burst) => (
+            <div key={burst.id} className="pointer-events-none absolute inset-0 z-[130] overflow-hidden">
+              <div
+                className="absolute select-none text-3xl"
+                style={{
+                  left: `${burst.x}px`,
+                  top: `${burst.y}px`,
+                  animation: "cb-confetti-pop 1.2s ease-out forwards",
+                }}
+              >
+                🎉
+              </div>
+              {burst.pieces.map((piece) => (
+                <span
+                  key={piece.id}
+                  className={`absolute h-2.5 w-1.5 rounded-sm ${piece.colorClass}`}
+                  style={{
+                    left: `${burst.x}px`,
+                    top: `${burst.y}px`,
+                    ["--cb-dx" as string]: `${piece.dx}px`,
+                    ["--cb-dy" as string]: `${piece.dy}px`,
+                    ["--cb-rot" as string]: `${piece.rotation}deg`,
+                    animation: `cb-confetti-fall ${piece.duration}ms ease-out ${piece.delay}ms forwards`,
+                  }}
+                />
+              ))}
+            </div>
+          ))}
 
           {contextMenuState ? (
             <div
@@ -3716,6 +4261,45 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                 }}
               >
                 🖼️ Upload an image
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  const popAt = contextMenuState;
+                  closeBoardContextMenu();
+                  if (popAt) {
+                    launchConfetti(popAt.x + 18, popAt.y + 18);
+                  }
+                }}
+              >
+                🎉 Hooray
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  const popAt = contextMenuState;
+                  closeBoardContextMenu();
+                  if (popAt) {
+                    launchSharknado(popAt.x + 18, popAt.y + 18);
+                  }
+                }}
+              >
+                🦈🌪️ Sharknado
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  const popAt = contextMenuState;
+                  closeBoardContextMenu();
+                  if (popAt) {
+                    launchCoinflip(popAt.x + 18, popAt.y + 18);
+                  }
+                }}
+              >
+                🪙 Coinflip
               </button>
             </div>
           ) : null}

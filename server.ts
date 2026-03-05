@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import next from "next";
 import { Server as IOServer } from "socket.io";
 import type {
@@ -27,8 +29,18 @@ type BoardState = {
   objects: Map<string, BoardObject>;
 };
 
+type PersistedBoardState = {
+  actions: BoardAction[];
+  objects: BoardObject[];
+};
+
+type PersistedBoardsFile = Record<string, PersistedBoardState>;
+
 const MAX_USERS_PER_BOARD = 10;
 const MAX_ACTIONS_PER_BOARD = 25000;
+const PERSISTENCE_DIR = path.join(process.cwd(), ".data");
+const PERSISTENCE_FILE = path.join(PERSISTENCE_DIR, "boards.json");
+const PERSISTENCE_TEMP_FILE = path.join(PERSISTENCE_DIR, "boards.json.tmp");
 
 const CURSOR_COLORS = [
   "#2563eb",
@@ -48,6 +60,135 @@ const ANIMAL_EMOJIS = ["🐶", "🐱", "🐰", "🦊", "🐼", "🐨", "🐯", "
 const pickRandom = <T,>(items: T[]): T => items[Math.floor(Math.random() * items.length)];
 
 const boards = new Map<string, BoardState>();
+
+let persistTimeout: NodeJS.Timeout | null = null;
+let persistenceWriteChain: Promise<void> = Promise.resolve();
+
+const serializeBoards = (): PersistedBoardsFile => {
+  const serialized: PersistedBoardsFile = {};
+
+  for (const [boardId, board] of boards.entries()) {
+    if (board.actions.length === 0 && board.objects.size === 0) {
+      continue;
+    }
+
+    serialized[boardId] = {
+      actions: board.actions,
+      objects: Array.from(board.objects.values()),
+    };
+  }
+
+  return serialized;
+};
+
+const persistBoardsNow = async () => {
+  const payload = JSON.stringify(serializeBoards());
+  await fs.mkdir(PERSISTENCE_DIR, { recursive: true });
+  await fs.writeFile(PERSISTENCE_TEMP_FILE, payload, "utf8");
+
+  try {
+    await fs.rename(PERSISTENCE_TEMP_FILE, PERSISTENCE_FILE);
+    return;
+  } catch (error) {
+    console.warn("Atomic board persistence rename failed, using direct write fallback:", error);
+  }
+
+  await fs.writeFile(PERSISTENCE_FILE, payload, "utf8");
+
+  try {
+    await fs.unlink(PERSISTENCE_TEMP_FILE);
+  } catch (unlinkError) {
+    const unlinkNodeError = unlinkError as NodeJS.ErrnoException;
+    if (unlinkNodeError.code !== "ENOENT") {
+      console.warn("Failed to remove temp persistence file:", unlinkError);
+    }
+  }
+};
+
+const queuePersistBoardsNow = () => {
+  persistenceWriteChain = persistenceWriteChain
+    .then(async () => {
+      await persistBoardsNow();
+    })
+    .catch((error) => {
+      console.error("Failed to persist boards:", error);
+    });
+
+  return persistenceWriteChain;
+};
+
+const schedulePersistBoards = () => {
+  if (persistTimeout) {
+    clearTimeout(persistTimeout);
+  }
+
+  persistTimeout = setTimeout(() => {
+    persistTimeout = null;
+    void queuePersistBoardsNow();
+  }, 250);
+};
+
+const flushPersistBoards = async () => {
+  if (persistTimeout) {
+    clearTimeout(persistTimeout);
+    persistTimeout = null;
+  }
+
+  await queuePersistBoardsNow();
+};
+
+const loadPersistedBoards = async () => {
+  try {
+    const raw = await fs.readFile(PERSISTENCE_FILE, "utf8");
+    const parsed = JSON.parse(raw) as PersistedBoardsFile;
+
+    for (const [boardId, persistedBoard] of Object.entries(parsed)) {
+      const safeBoardId = boardId.trim().slice(0, 80);
+      if (!safeBoardId) {
+        continue;
+      }
+
+      boards.set(safeBoardId, {
+        users: new Map<string, BoardUser>(),
+        actions: Array.isArray(persistedBoard.actions) ? persistedBoard.actions : [],
+        objects: new Map(
+          (Array.isArray(persistedBoard.objects) ? persistedBoard.objects : [])
+            .filter((object) => typeof object?.id === "string" && object.id.trim())
+            .map((object) => [object.id, object] as const),
+        ),
+      });
+    }
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError?.code === "ENOENT") {
+      return;
+    }
+
+    try {
+      const fallbackRaw = await fs.readFile(PERSISTENCE_TEMP_FILE, "utf8");
+      const parsed = JSON.parse(fallbackRaw) as PersistedBoardsFile;
+
+      for (const [boardId, persistedBoard] of Object.entries(parsed)) {
+        const safeBoardId = boardId.trim().slice(0, 80);
+        if (!safeBoardId) {
+          continue;
+        }
+
+        boards.set(safeBoardId, {
+          users: new Map<string, BoardUser>(),
+          actions: Array.isArray(persistedBoard.actions) ? persistedBoard.actions : [],
+          objects: new Map(
+            (Array.isArray(persistedBoard.objects) ? persistedBoard.objects : [])
+              .filter((object) => typeof object?.id === "string" && object.id.trim())
+              .map((object) => [object.id, object] as const),
+          ),
+        });
+      }
+    } catch {
+      console.error("Failed to load persisted boards:", error);
+    }
+  }
+};
 
 const getBoard = (boardId: string): BoardState => {
   const existing = boards.get(boardId);
@@ -70,13 +211,11 @@ const cleanupBoardIfEmpty = (boardId: string) => {
   if (!board) {
     return;
   }
-
-  if (board.users.size === 0) {
-    boards.delete(boardId);
-  }
 };
 
-void app.prepare().then(() => {
+void app.prepare().then(async () => {
+  await loadPersistedBoards();
+
   const httpServer = createServer((req, res) => {
     handle(req, res);
   });
@@ -204,6 +343,8 @@ void app.prepare().then(() => {
         board.actions.splice(0, board.actions.length - MAX_ACTIONS_PER_BOARD);
       }
 
+      schedulePersistBoards();
+
       socket.to(boardId).emit("draw-segment", segment);
     });
 
@@ -226,6 +367,8 @@ void app.prepare().then(() => {
         board.actions.splice(0, board.actions.length - MAX_ACTIONS_PER_BOARD);
       }
 
+      schedulePersistBoards();
+
       socket.to(boardId).emit("fill-area", fill);
     });
 
@@ -246,6 +389,8 @@ void app.prepare().then(() => {
           replace,
         },
       ];
+
+      schedulePersistBoards();
 
       socket.to(boardId).emit("replace-canvas", replace);
     });
@@ -275,6 +420,7 @@ void app.prepare().then(() => {
       }
 
       board.objects.set(object.id, object);
+      schedulePersistBoards();
       socket.to(boardId).emit("upsert-object", object);
     });
 
@@ -290,6 +436,7 @@ void app.prepare().then(() => {
       }
 
       board.objects.delete(id);
+      schedulePersistBoards();
       socket.to(boardId).emit("remove-object", { id });
     });
 
@@ -334,11 +481,25 @@ void app.prepare().then(() => {
 
       board.actions = [];
       board.objects.clear();
+      schedulePersistBoards();
       io.to(boardId).emit("clear-board");
     });
 
     socket.on("disconnect", () => {
       leaveCurrentBoard();
+      void flushPersistBoards();
+    });
+  });
+
+  process.on("SIGINT", () => {
+    void flushPersistBoards().finally(() => {
+      process.exit(0);
+    });
+  });
+
+  process.on("SIGTERM", () => {
+    void flushPersistBoards().finally(() => {
+      process.exit(0);
     });
   });
 

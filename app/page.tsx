@@ -3,15 +3,28 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { readStoredAccount, saveAccount } from "@/lib/account";
+import { readStoredBoards, upsertStoredBoard } from "@/lib/boards";
 
 const createBoardId = () => {
   const randomChunk = Math.random().toString(36).slice(2, 6);
   return `board-${Date.now().toString(36)}-${randomChunk}`;
 };
 
+const looksLikeBoardLink = (value: string) => {
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized.startsWith("http://") ||
+    normalized.startsWith("https://") ||
+    normalized.startsWith("www.") ||
+    normalized.includes("/board/")
+  );
+};
+
 export default function Home() {
   const router = useRouter();
   const [boardId, setBoardId] = useState("");
+  const [boardIdError, setBoardIdError] = useState<string | null>(null);
+  const [createBoardError, setCreateBoardError] = useState<string | null>(null);
   const [nickname, setNickname] = useState(() => {
     if (typeof window === "undefined") {
       return "";
@@ -47,9 +60,16 @@ export default function Home() {
     const sanitized = nextBoardId.trim().slice(0, 80);
     const safeNickname = ensureNickname();
 
+    if (looksLikeBoardLink(sanitized)) {
+      setBoardIdError("Please enter only board ID, not a link");
+      return;
+    }
+
     if (!sanitized || !safeNickname) {
       return;
     }
+
+    setBoardIdError(null);
 
     const account = saveAccount({ nickname: safeNickname });
 
@@ -59,6 +79,34 @@ export default function Home() {
     });
 
     router.push(`/board/${encodeURIComponent(sanitized)}?${params.toString()}`);
+  };
+
+  const createBoard = () => {
+    const safeNickname = ensureNickname();
+    if (!safeNickname) {
+      return;
+    }
+
+    const account = saveAccount({ nickname: safeNickname });
+    const existingBoards = readStoredBoards(account.userId);
+    if (existingBoards.length >= 5) {
+      setCreateBoardError("You have 5 boards already - delete one to create new");
+      return;
+    }
+
+    const defaultName = `Board ${existingBoards.length + 1}`;
+    const promptedName = window.prompt("Enter board name", defaultName)?.trim().slice(0, 80) ?? "";
+    if (!promptedName) {
+      return;
+    }
+
+    const nextBoardId = createBoardId();
+    upsertStoredBoard(account.userId, {
+      id: nextBoardId,
+      name: promptedName,
+    });
+    setCreateBoardError(null);
+    goToBoard(nextBoardId);
   };
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -105,10 +153,25 @@ export default function Home() {
           <input
             id="boardId"
             value={boardId}
-            onChange={(event) => setBoardId(event.target.value)}
+            onChange={(event) => {
+              setBoardId(event.target.value);
+              if (boardIdError) {
+                setBoardIdError(null);
+              }
+            }}
+            onPaste={(event) => {
+              const pastedText = event.clipboardData.getData("text");
+              if (looksLikeBoardLink(pastedText)) {
+                event.preventDefault();
+                setBoardIdError("Links are not allowed here. Paste only board ID");
+              }
+            }}
             placeholder="Enter board ID"
             className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none transition focus:border-zinc-500"
           />
+          {boardIdError ? (
+            <p className="text-sm font-medium text-red-600">{boardIdError}</p>
+          ) : null}
           <button
             type="submit"
             className="w-full rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800"
@@ -121,10 +184,21 @@ export default function Home() {
 
         <button
           type="button"
-          onClick={() => goToBoard(createBoardId())}
+          onClick={createBoard}
           className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
         >
           Create new board
+        </button>
+        {createBoardError ? (
+          <p className="mt-2 text-sm font-medium text-red-600">{createBoardError}</p>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={() => router.push("/my-boards")}
+          className="mt-3 w-full rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50"
+        >
+          🗂️ View my boards
         </button>
       </main>
     </div>
