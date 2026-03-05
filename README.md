@@ -57,3 +57,13 @@ Notes:
 - `app/board/[boardId]/page.tsx` mounts a board session.
 - `components/CollaborativeBoard.tsx` handles canvas rendering + realtime syncing.
 - `lib/protocol.ts` contains shared event payload types.
+
+## Session logs
+
+- Session change log is stored in `SESSION_HISTORY.txt` at the project root.
+
+## Well-known Issues
+
+- Bottle tool lacks synchronization
+- Bottle in Bottle tool doesnt point to the winner
+- Coin flip tool lacks visual appeal
