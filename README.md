@@ -54,6 +54,7 @@ Troubleshooting:
 - If board shows `Cannot connect to realtime server`, set `NEXT_PUBLIC_BACKEND_URL` in Vercel to your deployed backend domain and redeploy.
 - Use only backend origin (example: `https://your-backend-domain`) and do not append `/socket.io`.
 - Backend must expose both `/socket.io` and `/api/board-presence` and allow cross-origin requests.
+- Quick runtime override (no redeploy): open board URL with `?backend=https://your-backend-domain` once; app stores this value in browser localStorage for next visits.
 
 ## Architecture
 

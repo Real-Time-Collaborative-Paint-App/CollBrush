@@ -1,4 +1,17 @@
 const normalizeBaseUrl = (value: string) => value.replace(/\/+$/, "");
+const RUNTIME_BACKEND_STORAGE_KEY = "collbrush_backend_url";
+
+const tryParseHttpUrl = (value: string) => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "";
+  }
+};
 
 const coerceHttpBaseUrl = (value: string) => {
   const trimmed = value.trim().replace(/^['"]|['"]$/g, "");
@@ -37,8 +50,53 @@ export const getPublicBackendBaseUrl = () => {
   return normalizeBaseUrl(coerceHttpBaseUrl(raw));
 };
 
+const getRuntimeOverrideBackendBaseUrl = () => {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  const readStored = () => {
+    try {
+      const stored = window.localStorage.getItem(RUNTIME_BACKEND_STORAGE_KEY)?.trim() ?? "";
+      if (!stored) {
+        return "";
+      }
+      const parsed = tryParseHttpUrl(coerceHttpBaseUrl(stored));
+      return parsed ? normalizeBaseUrl(parsed) : "";
+    } catch {
+      return "";
+    }
+  };
+
+  try {
+    const url = new URL(window.location.href);
+    const queryValue = url.searchParams.get("backend")?.trim() ?? "";
+    if (queryValue) {
+      const parsed = tryParseHttpUrl(coerceHttpBaseUrl(queryValue));
+      if (parsed) {
+        const normalized = normalizeBaseUrl(parsed);
+        window.localStorage.setItem(RUNTIME_BACKEND_STORAGE_KEY, normalized);
+        return normalized;
+      }
+    }
+  } catch {
+    return readStored();
+  }
+
+  return readStored();
+};
+
+export const getResolvedBackendBaseUrl = () => {
+  const runtimeOverride = getRuntimeOverrideBackendBaseUrl();
+  if (runtimeOverride) {
+    return runtimeOverride;
+  }
+
+  return getPublicBackendBaseUrl();
+};
+
 export const buildBackendUrl = (pathWithQuery: string) => {
-  const baseUrl = getPublicBackendBaseUrl();
+  const baseUrl = getResolvedBackendBaseUrl();
   if (!baseUrl) {
     return pathWithQuery;
   }
@@ -47,6 +105,6 @@ export const buildBackendUrl = (pathWithQuery: string) => {
 };
 
 export const getSocketServerUrl = () => {
-  const baseUrl = getPublicBackendBaseUrl();
+  const baseUrl = getResolvedBackendBaseUrl();
   return baseUrl || undefined;
 };

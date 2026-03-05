@@ -1089,3 +1089,17 @@ Date: 2026-03-04
                                 Validation:
                                 - `npm run typecheck`: passing.
                                 - `npm run test`: 8/8 passing.
+
+                        [97] Request: Apply direct fix after new Vercel error state.
+                                Changes made:
+                                - Added runtime backend override support in `lib/runtime-config.ts`:
+                                    - Accepts `?backend=https://your-backend-domain` on board URL.
+                                    - Persists override in localStorage (`collbrush_backend_url`).
+                                    - Uses override for both Socket.IO and `/api/board-presence` calls.
+                                - Updated connect error message in `components/CollaborativeBoard.tsx` to mention runtime override option.
+                                - Added README troubleshooting note for no-redeploy runtime override flow.
+                                Result:
+                                - Deployed frontend can be pointed to backend immediately via URL query param without waiting for a new frontend deployment.
+                                Validation:
+                                - `npm run typecheck`: passing.
+                                - `npm run test`: 8/8 passing.

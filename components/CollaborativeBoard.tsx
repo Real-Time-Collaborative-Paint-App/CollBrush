@@ -1157,7 +1157,9 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         typeof window !== "undefined" && window.location.hostname.toLowerCase().endsWith("vercel.app");
 
       if (!configuredBackend && isVercelHost) {
-        setJoinError("Cannot connect to realtime server. Configure NEXT_PUBLIC_BACKEND_URL to your backend domain.");
+        setJoinError(
+          "Cannot connect to realtime server. Configure NEXT_PUBLIC_BACKEND_URL or open with ?backend=https://your-backend-domain.",
+        );
       } else if (configuredBackend) {
         setJoinError(`Cannot connect to realtime server (${configuredBackend}).`);
       } else {
