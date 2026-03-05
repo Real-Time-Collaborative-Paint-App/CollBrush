@@ -1055,3 +1055,37 @@ Date: 2026-03-04
                 - Bottle spins are now synchronized across users in the same board in realtime.
                 Validation:
                 - `npm run check`: passing (lint, typecheck, tests, build).
+
+            [94] Request: Add this session's logs location to README.
+                Changes made:
+                - Added a new `Session logs` section to `README.md`.
+                - Documented that session logs are stored in `SESSION_HISTORY.txt` at project root.
+                Result:
+                - README now explicitly shows where to find session logs for this project.
+
+                        [95] Request: Add "Well-known Issues" section to README.
+                                Changes made:
+                                - Added `Well-known Issues` section to `README.md`.
+                                - Added listed issues:
+                                    - Bottle tool lacks synchronization
+                                    - Bottle in Bottle tool doesnt point to the winner
+                                    - Coin tool lacks visual appeal
+                                Result:
+                                - README now documents the known issues list requested by the user.
+
+                        [96] Request: Fix Vercel deployment issue "Cannot connect to realtime server".
+                                Root cause:
+                                - On Vercel frontend-only deployments, realtime works only when `NEXT_PUBLIC_BACKEND_URL` is correctly configured to an external backend.
+                                - Misformatted backend URLs (missing protocol or `ws/wss` schemes) could produce invalid runtime targets.
+                                Changes made:
+                                - Hardened backend URL normalization in `lib/runtime-config.ts`:
+                                    - supports values without protocol by defaulting to `https://`
+                                    - converts `ws://`/`wss://` to `http://`/`https://`
+                                    - trims optional quote wrappers and trailing slashes
+                                - Improved connect error messaging in `components/CollaborativeBoard.tsx`:
+                                    - shows actionable hint on Vercel when backend URL is missing
+                                    - includes configured backend origin in error when set but unreachable
+                                - Added Vercel troubleshooting notes in `README.md`.
+                                Validation:
+                                - `npm run typecheck`: passing.
+                                - `npm run test`: 8/8 passing.

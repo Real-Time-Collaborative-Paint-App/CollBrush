@@ -50,6 +50,11 @@ Notes:
 - Frontend calls `/api/board-presence` and Socket.IO via `NEXT_PUBLIC_BACKEND_URL` when set.
 - Without `NEXT_PUBLIC_BACKEND_URL`, frontend defaults to same-origin backend (local all-in-one mode).
 
+Troubleshooting:
+- If board shows `Cannot connect to realtime server`, set `NEXT_PUBLIC_BACKEND_URL` in Vercel to your deployed backend domain and redeploy.
+- Use only backend origin (example: `https://your-backend-domain`) and do not append `/socket.io`.
+- Backend must expose both `/socket.io` and `/api/board-presence` and allow cross-origin requests.
+
 ## Architecture
 
 - `server.ts` hosts Next.js and Socket.IO in one Node server.

@@ -6,7 +6,7 @@ import { io, type Socket } from "socket.io-client";
 import { readStoredAccount, saveAccount } from "@/lib/account";
 import { removeLocalBoardPresence, upsertLocalBoardPresence } from "@/lib/board-presence";
 import { readStoredBoards, upsertStoredBoard } from "@/lib/boards";
-import { getSocketServerUrl } from "@/lib/runtime-config";
+import { getPublicBackendBaseUrl, getSocketServerUrl } from "@/lib/runtime-config";
 import type {
   BottleSpinPayload,
   BoardAction,
@@ -1152,7 +1152,17 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     });
 
     socket.on("connect_error", () => {
-      setJoinError("Cannot connect to realtime server.");
+      const configuredBackend = getPublicBackendBaseUrl();
+      const isVercelHost =
+        typeof window !== "undefined" && window.location.hostname.toLowerCase().endsWith("vercel.app");
+
+      if (!configuredBackend && isVercelHost) {
+        setJoinError("Cannot connect to realtime server. Configure NEXT_PUBLIC_BACKEND_URL to your backend domain.");
+      } else if (configuredBackend) {
+        setJoinError(`Cannot connect to realtime server (${configuredBackend}).`);
+      } else {
+        setJoinError("Cannot connect to realtime server.");
+      }
       setIsConnected(false);
     });
 
