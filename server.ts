@@ -3,6 +3,7 @@ import next from "next";
 import { Server as IOServer } from "socket.io";
 import type {
   BoardAction,
+  BoardObject,
   BoardUser,
   CursorMovePayload,
   CursorState,
@@ -23,6 +24,7 @@ const handle = app.getRequestHandler();
 type BoardState = {
   users: Map<string, BoardUser>;
   actions: BoardAction[];
+  objects: Map<string, BoardObject>;
 };
 
 const MAX_USERS_PER_BOARD = 10;
@@ -56,6 +58,7 @@ const getBoard = (boardId: string): BoardState => {
   const created: BoardState = {
     users: new Map<string, BoardUser>(),
     actions: [],
+    objects: new Map<string, BoardObject>(),
   };
 
   boards.set(boardId, created);
@@ -174,6 +177,7 @@ void app.prepare().then(() => {
       callback({
         ok: true,
         actions: board.actions,
+        objects: Array.from(board.objects.values()),
         usersCount: users.length,
         users,
       });
@@ -259,6 +263,36 @@ void app.prepare().then(() => {
       socket.to(boardId).emit("replace-canvas-preview", replace);
     });
 
+    socket.on("upsert-object", (object: BoardObject) => {
+      const boardId = socket.data.boardId as string | undefined;
+      if (!boardId) {
+        return;
+      }
+
+      const board = boards.get(boardId);
+      if (!board) {
+        return;
+      }
+
+      board.objects.set(object.id, object);
+      socket.to(boardId).emit("upsert-object", object);
+    });
+
+    socket.on("remove-object", ({ id }: { id: string }) => {
+      const boardId = socket.data.boardId as string | undefined;
+      if (!boardId) {
+        return;
+      }
+
+      const board = boards.get(boardId);
+      if (!board) {
+        return;
+      }
+
+      board.objects.delete(id);
+      socket.to(boardId).emit("remove-object", { id });
+    });
+
     socket.on("cursor-move", (payload: CursorMovePayload) => {
       const boardId = socket.data.boardId as string | undefined;
       if (!boardId) {
@@ -299,6 +333,7 @@ void app.prepare().then(() => {
       }
 
       board.actions = [];
+      board.objects.clear();
       io.to(boardId).emit("clear-board");
     });
 

@@ -22,6 +22,40 @@ export interface ReplaceCanvasAction {
   dataUrl: string;
 }
 
+export interface TextStyle {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold: boolean;
+  italic: boolean;
+  strikethrough: boolean;
+  spoiler: boolean;
+}
+
+export interface TextObject {
+  id: string;
+  type: "text";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  content: string;
+  style: TextStyle;
+}
+
+export interface StickyObject {
+  id: string;
+  type: "sticky";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  content: string;
+  style: TextStyle;
+}
+
+export type BoardObject = TextObject | StickyObject;
+
 export type BoardAction =
   | { type: "segment"; segment: DrawSegment }
   | { type: "fill"; fill: FillAction }
@@ -59,6 +93,7 @@ export type JoinBoardErrorCode = "BOARD_FULL" | "INVALID_BOARD" | "INVALID_USER"
 export interface JoinBoardSuccess {
   ok: true;
   actions: BoardAction[];
+  objects: BoardObject[];
   usersCount: number;
   users: BoardUser[];
 }

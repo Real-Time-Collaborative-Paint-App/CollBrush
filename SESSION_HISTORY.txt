@@ -117,3 +117,38 @@ Date: 2026-03-04
         - Integrated history tracking for draw/erase strokes, bucket fill, selection move, selection delete, and clear.
         Result:
         - Users can revert and re-apply their recent actions with standard keyboard shortcuts.
+
+    [14] Request: Implement Text tool (font/size/color/bold/italic/strikethrough/spoiler) and movable mustard sticky notes.
+        Changes made:
+        - Added collaborative board object model (`text` and `sticky`) to protocol and join payload.
+        - Added server-side object storage and realtime events: `upsert-object` and `remove-object`.
+        - Added new tools: 🔤 Text and 🗒️ Sticky.
+        - Added Text tool controls for content, font family, size, color, bold, italic, strikethrough, and spoiler mode.
+        - Added Sticky input and rendering with mustard-colored background.
+        - Added drag-to-move behavior for text and sticky objects with throttled realtime sync for smooth multi-user updates.
+        - Fixed build/lint blockers encountered during integration (search params and effect/state lint constraints).
+        Result:
+        - Users can place styled text, hide text as spoiler, place/move sticky notes, and see all changes collaboratively in real time.
+
+    [15] Request: Edit existing text/stickynotes, resize text/stickynote blocks, remove pre-entry text fields, and make text behave like Paint.
+        Changes made:
+        - Extended text/sticky object model with `width` and `height` for true resizable blocks.
+        - Removed pre-add text/sticky content fields from toolbar.
+        - Text tool now creates an editable text box directly on canvas (Paint-style direct text entry).
+        - Sticky tool now creates editable mustard note blocks directly on canvas.
+        - Added in-place editing for existing text and sticky notes (double-click/edit; blur to finish).
+        - Added resize handle for both text and sticky blocks with realtime collaborative sync.
+        - Added object selection and keyboard delete support for selected text/sticky objects.
+        Result:
+        - Existing text/sticky objects can be edited and resized; text entry happens directly in-canvas like Paint.
+
+    [16] Request: Auto-deselect sticky tool after placement; resize handle in bottom-right corner; per-object text toolbar above each selected block; style editing for selected text in both text and sticky blocks.
+        Changes made:
+        - Sticky tool now automatically switches back to draw mode after placing a sticky note.
+        - Resize handle is anchored at the true bottom-right corner of text/sticky block.
+        - Added per-object floating text toolbar above selected object (font, size, color, bold, italic, strikethrough, spoiler).
+        - Removed remaining global pre-entry fields and global text toolbar pattern.
+        - Enabled style changes for both text blocks and sticky note text.
+        - Extended sticky object schema with text style fields for collaborative style sync.
+        Result:
+        - Formatting controls are now object-specific and context-aware, matching requested workflow.

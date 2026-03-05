@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 import { readStoredAccount, saveAccount } from "@/lib/account";
 
 const createBoardId = () => {
@@ -11,22 +11,17 @@ const createBoardId = () => {
 
 export default function Home() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [boardId, setBoardId] = useState("");
-  const [nickname, setNickname] = useState("");
-  const fullBoardError = searchParams.get("error") === "board-full";
-  const loginRequiredError = searchParams.get("error") === "login-required";
-
-  useEffect(() => {
+  const [nickname, setNickname] = useState(() => {
     if (typeof window === "undefined") {
-      return;
+      return "";
     }
 
-    const storedAccount = readStoredAccount();
-    if (storedAccount) {
-      setNickname(storedAccount.nickname);
-    }
-  }, []);
+    return readStoredAccount()?.nickname ?? "";
+  });
+  const errorParam = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("error") : null;
+  const fullBoardError = errorParam === "board-full";
+  const loginRequiredError = errorParam === "login-required";
 
   const ensureNickname = () => {
     const currentNickname = nickname.trim().slice(0, 40);

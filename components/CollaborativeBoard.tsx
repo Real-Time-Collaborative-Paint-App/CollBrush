@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
-import { readStoredAccount, saveAccount, type CollBrushAccount } from "@/lib/account";
+import { readStoredAccount, saveAccount } from "@/lib/account";
 import type {
   BoardAction,
+  BoardObject,
   BoardUser,
   CursorState,
   DrawMode,
@@ -14,6 +15,7 @@ import type {
   JoinBoardResponse,
   Point,
   ReplaceCanvasAction,
+  TextStyle,
 } from "@/lib/protocol";
 
 type CollaborativeBoardProps = {
@@ -22,7 +24,7 @@ type CollaborativeBoardProps = {
   nickname: string;
 };
 
-type ToolMode = DrawMode | "bucket" | "select" | "picker";
+type ToolMode = DrawMode | "bucket" | "select" | "picker" | "text" | "sticky";
 
 type SelectionRect = {
   x: number;
@@ -36,8 +38,49 @@ type SnapshotHistoryEntry = {
   after: string;
 };
 
+type ResizeSession = {
+  startPoint: Point;
+  startWidth: number;
+  startHeight: number;
+};
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
+
+const DEFAULT_TEXT_STYLE: TextStyle = {
+  fontFamily: "Arial",
+  fontSize: 24,
+  color: "#111827",
+  bold: false,
+  italic: false,
+  strikethrough: false,
+  spoiler: false,
+};
+
+const normalizeBoardObject = (object: BoardObject): BoardObject => {
+  if (object.type === "text") {
+    return {
+      ...object,
+      width: object.width || 260,
+      height: object.height || 120,
+      style: {
+        ...DEFAULT_TEXT_STYLE,
+        ...object.style,
+      },
+    };
+  }
+
+  return {
+    ...object,
+    width: object.width || 220,
+    height: object.height || 160,
+    style: {
+      ...DEFAULT_TEXT_STYLE,
+      ...(object.style ?? {}),
+      fontSize: object.style?.fontSize ?? 18,
+    },
+  };
+};
 
 const hexToRgba = (hexColor: string): [number, number, number, number] => {
   const hex = hexColor.replace("#", "").trim();
@@ -196,6 +239,11 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const strokeStartSnapshotRef = useRef<string | null>(null);
   const strokeChangedRef = useRef(false);
   const selectionMoveStartSnapshotRef = useRef<string | null>(null);
+  const draggingObjectIdRef = useRef<string | null>(null);
+  const objectDragOffsetRef = useRef<Point | null>(null);
+  const lastObjectDragEmitRef = useRef(0);
+  const resizingObjectIdRef = useRef<string | null>(null);
+  const objectResizeSessionRef = useRef<ResizeSession | null>(null);
 
   const isDrawingRef = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
@@ -213,9 +261,13 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [mode, setMode] = useState<ToolMode>("draw");
   const [joinError, setJoinError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [account, setAccount] = useState<CollBrushAccount | null>(null);
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
   const [selectionPreviewRect, setSelectionPreviewRect] = useState<SelectionRect | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 1, height: 1 });
+  const [boardObjects, setBoardObjects] = useState<Record<string, BoardObject>>({});
+  const [activeObjectId, setActiveObjectId] = useState<string | null>(null);
+  const [editingObjectId, setEditingObjectId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState("");
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -225,7 +277,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     return `${window.location.origin}/board/${boardId}`;
   }, [boardId]);
 
-  const getCanvasPoint = useCallback((event: PointerEvent | React.PointerEvent<HTMLCanvasElement>): Point | null => {
+  const getCanvasPoint = useCallback((event: PointerEvent | React.PointerEvent<Element>): Point | null => {
     const canvas = canvasRef.current;
     if (!canvas) {
       return null;
@@ -286,6 +338,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     canvas.width = nextWidth;
     canvas.height = nextHeight;
+    setCanvasSize({ width: nextWidth, height: nextHeight });
     void redrawFromActions();
   }, [redrawFromActions]);
 
@@ -389,6 +442,43 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     return canvas.toDataURL("image/png");
   }, []);
 
+  const upsertBoardObject = useCallback((object: BoardObject, broadcast: boolean) => {
+    const normalized = normalizeBoardObject(object);
+
+    setBoardObjects((previous) => ({
+      ...previous,
+      [normalized.id]: normalized,
+    }));
+
+    if (broadcast) {
+      socketRef.current?.emit("upsert-object", normalized);
+    }
+  }, []);
+
+  const removeBoardObject = useCallback((id: string, broadcast: boolean) => {
+    setBoardObjects((previous) => {
+      if (!previous[id]) {
+        return previous;
+      }
+
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
+
+    if (broadcast) {
+      socketRef.current?.emit("remove-object", { id });
+    }
+  }, []);
+
+  const createObjectId = useCallback(
+    () =>
+      `obj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${
+        (readStoredAccount()?.userId ?? "anon")
+      }`,
+    [],
+  );
+
   const pushHistoryEntry = useCallback((entry: SnapshotHistoryEntry) => {
     if (!entry.before || !entry.after || entry.before === entry.after) {
       return;
@@ -438,11 +528,31 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     actionsRef.current = [];
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setBoardObjects({});
     setSelectionRect(null);
     setSelectionPreviewRect(null);
     movingBaseImageRef.current = null;
     movingSelectionImageRef.current = null;
   }, []);
+
+  useEffect(() => {
+    resizeCanvas();
+
+    const observer = new ResizeObserver(() => {
+      resizeCanvas();
+    });
+
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+
+    window.addEventListener("resize", resizeCanvas);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", resizeCanvas);
+    };
+  }, [resizeCanvas]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -465,37 +575,10 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       return;
     }
 
-    const nextAccount = saveAccount({
+    const account = saveAccount({
       userId: nextUserId,
       nickname: nextNickname,
     });
-
-    setAccount(nextAccount);
-  }, [nickname, router, userId]);
-
-  useEffect(() => {
-    resizeCanvas();
-
-    const observer = new ResizeObserver(() => {
-      resizeCanvas();
-    });
-
-    if (containerRef.current) {
-      observer.observe(containerRef.current);
-    }
-
-    window.addEventListener("resize", resizeCanvas);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", resizeCanvas);
-    };
-  }, [resizeCanvas]);
-
-  useEffect(() => {
-    if (!account) {
-      return;
-    }
 
     const socket = io({
       path: "/socket.io",
@@ -527,6 +610,14 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         setUsersCount(response.usersCount);
         setBoardUsers(response.users);
         actionsRef.current = response.actions;
+        setBoardObjects(
+          Object.fromEntries(
+            response.objects.map((object) => {
+              const normalized = normalizeBoardObject(object);
+              return [normalized.id, normalized];
+            }),
+          ) as Record<string, BoardObject>,
+        );
         void redrawFromActions();
       });
     });
@@ -589,6 +680,14 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       applyReplaceActionToCanvas(replace);
     });
 
+    socket.on("upsert-object", (object: BoardObject) => {
+      upsertBoardObject(object, false);
+    });
+
+    socket.on("remove-object", ({ id }: { id: string }) => {
+      removeBoardObject(id, false);
+    });
+
     socket.on("cursor-move", (cursorState: CursorState) => {
       setRemoteCursors((previous) => ({
         ...previous,
@@ -616,13 +715,16 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       socket.disconnect();
     };
   }, [
-    account,
     applyBoardAction,
     applyReplaceActionToCanvas,
     boardId,
     handleClear,
+    nickname,
+    removeBoardObject,
     redrawFromActions,
     router,
+    upsertBoardObject,
+    userId,
   ]);
 
   const startDrawing = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -637,6 +739,51 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     const point = getCanvasPoint(event);
     if (!point) {
+      return;
+    }
+
+    setActiveObjectId(null);
+    setEditingObjectId(null);
+
+    if (mode === "text") {
+      const object: BoardObject = {
+        id: createObjectId(),
+        type: "text",
+        x: Math.floor(point.x),
+        y: Math.floor(point.y),
+        width: 260,
+        height: 120,
+        content: "",
+        style: { ...DEFAULT_TEXT_STYLE },
+      };
+
+      upsertBoardObject(object, true);
+      setActiveObjectId(object.id);
+      setEditingObjectId(object.id);
+      setEditingContent("");
+      return;
+    }
+
+    if (mode === "sticky") {
+      const object: BoardObject = {
+        id: createObjectId(),
+        type: "sticky",
+        x: Math.floor(point.x),
+        y: Math.floor(point.y),
+        width: 220,
+        height: 160,
+        content: "",
+        style: {
+          ...DEFAULT_TEXT_STYLE,
+          fontSize: 18,
+        },
+      };
+
+      upsertBoardObject(object, true);
+      setActiveObjectId(object.id);
+      setEditingObjectId(object.id);
+      setEditingContent("");
+      setMode("draw");
       return;
     }
 
@@ -916,6 +1063,210 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     });
   };
 
+  const onObjectPointerDown = (event: React.PointerEvent<HTMLDivElement>, object: BoardObject) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    setActiveObjectId(object.id);
+
+    const point = getCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    draggingObjectIdRef.current = object.id;
+    objectDragOffsetRef.current = {
+      x: point.x - object.x,
+      y: point.y - object.y,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onObjectPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const resizingObjectId = resizingObjectIdRef.current;
+    const resizeSession = objectResizeSessionRef.current;
+    if (resizingObjectId && resizeSession) {
+      const point = getCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      const currentObject = boardObjects[resizingObjectId];
+      if (!currentObject) {
+        return;
+      }
+
+      const deltaX = point.x - resizeSession.startPoint.x;
+      const deltaY = point.y - resizeSession.startPoint.y;
+      const nextObject: BoardObject = {
+        ...currentObject,
+        width: clamp(Math.floor(resizeSession.startWidth + deltaX), 60, 1200),
+        height: clamp(Math.floor(resizeSession.startHeight + deltaY), 40, 1000),
+      };
+
+      upsertBoardObject(nextObject, false);
+
+      const now = Date.now();
+      if (now - lastObjectDragEmitRef.current >= 24) {
+        socketRef.current?.emit("upsert-object", nextObject);
+        lastObjectDragEmitRef.current = now;
+      }
+
+      return;
+    }
+
+    const objectId = draggingObjectIdRef.current;
+    const dragOffset = objectDragOffsetRef.current;
+    if (!objectId || !dragOffset) {
+      return;
+    }
+
+    const point = getCanvasPoint(event);
+    const canvas = canvasRef.current;
+    if (!point || !canvas) {
+      return;
+    }
+
+    const currentObject = boardObjects[objectId];
+    if (!currentObject) {
+      return;
+    }
+
+    const nextX = clamp(Math.floor(point.x - dragOffset.x), 0, canvas.width - 8);
+    const nextY = clamp(Math.floor(point.y - dragOffset.y), 0, canvas.height - 8);
+
+    const nextObject: BoardObject = {
+      ...currentObject,
+      x: nextX,
+      y: nextY,
+    };
+
+    upsertBoardObject(nextObject, false);
+
+    const now = Date.now();
+    if (now - lastObjectDragEmitRef.current >= 24) {
+      socketRef.current?.emit("upsert-object", nextObject);
+      lastObjectDragEmitRef.current = now;
+    }
+  };
+
+  const onObjectPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const resizingObjectId = resizingObjectIdRef.current;
+    if (resizingObjectId) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      const object = boardObjects[resizingObjectId];
+      if (object) {
+        socketRef.current?.emit("upsert-object", object);
+      }
+
+      resizingObjectIdRef.current = null;
+      objectResizeSessionRef.current = null;
+      return;
+    }
+
+    const objectId = draggingObjectIdRef.current;
+    const dragOffset = objectDragOffsetRef.current;
+    if (!objectId) {
+      return;
+    }
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+
+    const point = getCanvasPoint(event);
+    const canvas = canvasRef.current;
+    const currentObject = boardObjects[objectId];
+    if (point && canvas && dragOffset && currentObject) {
+      const nextObject: BoardObject = {
+        ...currentObject,
+        x: clamp(Math.floor(point.x - dragOffset.x), 0, canvas.width - 8),
+        y: clamp(Math.floor(point.y - dragOffset.y), 0, canvas.height - 8),
+      };
+
+      upsertBoardObject(nextObject, true);
+    } else if (currentObject) {
+      socketRef.current?.emit("upsert-object", currentObject);
+    }
+
+    draggingObjectIdRef.current = null;
+    objectDragOffsetRef.current = null;
+  };
+
+  const onObjectResizePointerDown = (event: React.PointerEvent<HTMLButtonElement>, object: BoardObject) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const point = getCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    resizingObjectIdRef.current = object.id;
+    objectResizeSessionRef.current = {
+      startPoint: point,
+      startWidth: object.width,
+      startHeight: object.height,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onObjectDoubleClick = (object: BoardObject) => {
+    setActiveObjectId(object.id);
+    setEditingObjectId(object.id);
+    setEditingContent(object.content);
+  };
+
+  const onObjectContentChange = (objectId: string, value: string) => {
+    setEditingContent(value);
+
+    const object = boardObjects[objectId];
+    if (!object) {
+      return;
+    }
+
+    const nextObject: BoardObject = {
+      ...object,
+      content: value,
+    };
+
+    upsertBoardObject(nextObject, false);
+    socketRef.current?.emit("upsert-object", nextObject);
+  };
+
+  const updateActiveObjectStyle = (patch: Partial<TextStyle>) => {
+    if (!activeObjectId) {
+      return;
+    }
+
+    const object = boardObjects[activeObjectId];
+    if (!object) {
+      return;
+    }
+
+    const nextObject: BoardObject = {
+      ...object,
+      style: {
+        ...object.style,
+        ...patch,
+      },
+    };
+
+    upsertBoardObject(nextObject, true);
+  };
+
+  const finishObjectEditing = () => {
+    const editingId = editingObjectId;
+    if (!editingId) {
+      return;
+    }
+
+    const object = boardObjects[editingId];
+    if (object) {
+      socketRef.current?.emit("upsert-object", object);
+    }
+
+    setEditingObjectId(null);
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -951,6 +1302,14 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       }
 
       if ((event.key !== "Delete" && event.key !== "Backspace") || !selectionRect) {
+        if ((event.key === "Delete" || event.key === "Backspace") && activeObjectId) {
+          removeBoardObject(activeObjectId, true);
+          if (editingObjectId === activeObjectId) {
+            setEditingObjectId(null);
+          }
+          setActiveObjectId(null);
+          event.preventDefault();
+        }
         return;
       }
 
@@ -982,9 +1341,12 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     };
   }, [
     applySnapshotAndBroadcast,
+    activeObjectId,
     commitCanvasSnapshot,
+    editingObjectId,
     getCanvasSnapshot,
     pushHistoryEntry,
+    removeBoardObject,
     selectionRect,
   ]);
 
@@ -1061,6 +1423,24 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             >
               🎨 Picker
             </button>
+            <button
+              type="button"
+              onClick={() => setMode("text")}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                mode === "text" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
+              }`}
+            >
+              🔤 Text
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("sticky")}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                mode === "sticky" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
+              }`}
+            >
+              🗒️ Sticky
+            </button>
 
             <div className="mx-1 h-6 w-px bg-zinc-300" />
 
@@ -1112,6 +1492,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             >
               🔗 Copy link
             </button>
+
           </div>
         </div>
       </header>
@@ -1134,14 +1515,201 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             onPointerEnter={emitCursorOnEnter}
           />
 
+          {Object.values(boardObjects).map((object) => (
+            <div
+              key={object.id}
+              className="absolute z-20 cursor-move select-none"
+              style={{
+                left: `${(object.x / canvasSize.width) * 100}%`,
+                top: `${(object.y / canvasSize.height) * 100}%`,
+                width: `${(object.width / canvasSize.width) * 100}%`,
+                height: `${(object.height / canvasSize.height) * 100}%`,
+                minWidth: "60px",
+                minHeight: "40px",
+              }}
+              onPointerDown={(event) => onObjectPointerDown(event, object)}
+              onPointerMove={onObjectPointerMove}
+              onPointerUp={onObjectPointerUp}
+              onPointerCancel={onObjectPointerUp}
+              onDoubleClick={() => onObjectDoubleClick(object)}
+            >
+              {activeObjectId === object.id ? (
+                <div
+                  className="absolute bottom-full left-0 z-30 mb-2 flex flex-wrap items-center gap-1 rounded-md border border-zinc-300 bg-white p-1 shadow"
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  <select
+                    value={object.style.fontFamily}
+                    onChange={(event) => updateActiveObjectStyle({ fontFamily: event.target.value })}
+                    className="rounded border border-zinc-300 bg-white px-1 py-0.5 text-xs"
+                  >
+                    <option value="Arial">Arial</option>
+                    <option value="Verdana">Verdana</option>
+                    <option value="Tahoma">Tahoma</option>
+                    <option value="Times New Roman">Times</option>
+                    <option value="Courier New">Courier</option>
+                    <option value="Georgia">Georgia</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={8}
+                    max={120}
+                    value={object.style.fontSize}
+                    onChange={(event) =>
+                      updateActiveObjectStyle({
+                        fontSize: clamp(Number(event.target.value) || 8, 8, 120),
+                      })
+                    }
+                    className="w-14 rounded border border-zinc-300 px-1 py-0.5 text-xs"
+                  />
+                  <input
+                    type="color"
+                    value={object.style.color}
+                    onChange={(event) => updateActiveObjectStyle({ color: event.target.value })}
+                    className="h-6 w-8 rounded border border-zinc-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => updateActiveObjectStyle({ bold: !object.style.bold })}
+                    className={`rounded px-1.5 py-0.5 text-xs font-bold ${
+                      object.style.bold ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
+                    }`}
+                  >
+                    B
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateActiveObjectStyle({ italic: !object.style.italic })}
+                    className={`rounded px-1.5 py-0.5 text-xs italic ${
+                      object.style.italic ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
+                    }`}
+                  >
+                    I
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateActiveObjectStyle({
+                        strikethrough: !object.style.strikethrough,
+                      })
+                    }
+                    className={`rounded px-1.5 py-0.5 text-xs line-through ${
+                      object.style.strikethrough ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
+                    }`}
+                  >
+                    S
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateActiveObjectStyle({ spoiler: !object.style.spoiler })}
+                    className={`rounded px-1.5 py-0.5 text-xs ${
+                      object.style.spoiler ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
+                    }`}
+                  >
+                    Spoiler
+                  </button>
+                </div>
+              ) : null}
+
+              {object.type === "text" ? (
+                editingObjectId === object.id ? (
+                  <textarea
+                    autoFocus
+                    value={editingContent}
+                    onChange={(event) => onObjectContentChange(object.id, event.target.value)}
+                    onBlur={finishObjectEditing}
+                    className="w-full resize-none rounded border border-zinc-300 bg-white/90 px-1 py-0.5 outline-none"
+                    style={{
+                      height: "100%",
+                      fontFamily: object.style.fontFamily,
+                      fontSize: `${object.style.fontSize}px`,
+                      color: object.style.color,
+                      fontWeight: object.style.bold ? 700 : 400,
+                      fontStyle: object.style.italic ? "italic" : "normal",
+                      textDecoration: object.style.strikethrough ? "line-through" : "none",
+                    }}
+                  />
+                ) : (
+                  <div
+                    className={`rounded border px-1 py-0.5 ${
+                      activeObjectId === object.id ? "border-blue-400" : "border-transparent"
+                    } ${object.style.spoiler ? "bg-black" : "bg-transparent"}`}
+                    style={{
+                      width: "100%",
+                      minHeight: "100%",
+                      fontFamily: object.style.fontFamily,
+                      fontSize: `${object.style.fontSize}px`,
+                      color: object.style.spoiler ? "transparent" : object.style.color,
+                      fontWeight: object.style.bold ? 700 : 400,
+                      fontStyle: object.style.italic ? "italic" : "normal",
+                      textDecoration: object.style.strikethrough ? "line-through" : "none",
+                      textShadow: object.style.spoiler ? `0 0 6px ${object.style.color}` : "none",
+                      whiteSpace: "pre-wrap",
+                    }}
+                    title={object.style.spoiler ? "Spoiler text" : undefined}
+                  >
+                    {object.content || " "}
+                  </div>
+                )
+              ) : (
+                editingObjectId === object.id ? (
+                  <textarea
+                    autoFocus
+                    value={editingContent}
+                    onChange={(event) => onObjectContentChange(object.id, event.target.value)}
+                    onBlur={finishObjectEditing}
+                    className="w-full resize-none rounded border border-amber-600 bg-[#E1AD01] px-3 py-2 outline-none shadow-sm"
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      fontFamily: object.style.fontFamily,
+                      fontSize: `${object.style.fontSize}px`,
+                      color: object.style.spoiler ? "transparent" : object.style.color,
+                      fontWeight: object.style.bold ? 700 : 400,
+                      fontStyle: object.style.italic ? "italic" : "normal",
+                      textDecoration: object.style.strikethrough ? "line-through" : "none",
+                      textShadow: object.style.spoiler ? `0 0 6px ${object.style.color}` : "none",
+                    }}
+                  />
+                ) : (
+                  <div
+                    className={`rounded border bg-[#E1AD01] px-3 py-2 shadow-sm ${
+                      activeObjectId === object.id ? "border-blue-500" : "border-amber-500"
+                    }`}
+                    style={{
+                      width: "100%",
+                      minHeight: "100%",
+                      fontFamily: object.style.fontFamily,
+                      fontSize: `${object.style.fontSize}px`,
+                      color: object.style.spoiler ? "transparent" : object.style.color,
+                      fontWeight: object.style.bold ? 700 : 400,
+                      fontStyle: object.style.italic ? "italic" : "normal",
+                      textDecoration: object.style.strikethrough ? "line-through" : "none",
+                      textShadow: object.style.spoiler ? `0 0 6px ${object.style.color}` : "none",
+                    }}
+                  >
+                    {object.content || " "}
+                  </div>
+                )
+              )}
+
+              <button
+                type="button"
+                className="absolute bottom-0 right-0 h-4 w-4 translate-x-1/2 translate-y-1/2 cursor-se-resize rounded-sm border border-zinc-700 bg-white"
+                onPointerDown={(event) => onObjectResizePointerDown(event, object)}
+                aria-label="Resize object"
+              />
+            </div>
+          ))}
+
           {displayedSelection ? (
             <div
               className="pointer-events-none absolute border-2 border-dashed border-blue-500 bg-blue-200/20"
               style={{
-                left: `${(displayedSelection.x / (canvasRef.current?.width || 1)) * 100}%`,
-                top: `${(displayedSelection.y / (canvasRef.current?.height || 1)) * 100}%`,
-                width: `${(displayedSelection.width / (canvasRef.current?.width || 1)) * 100}%`,
-                height: `${(displayedSelection.height / (canvasRef.current?.height || 1)) * 100}%`,
+                left: `${(displayedSelection.x / canvasSize.width) * 100}%`,
+                top: `${(displayedSelection.y / canvasSize.height) * 100}%`,
+                width: `${(displayedSelection.width / canvasSize.width) * 100}%`,
+                height: `${(displayedSelection.height / canvasSize.height) * 100}%`,
               }}
             />
           ) : null}
