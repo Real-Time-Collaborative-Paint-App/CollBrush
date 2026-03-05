@@ -765,3 +765,100 @@ Date: 2026-03-04
                 - Coin spin now uses constant position (`translateY(0)` at both start/end).
                 Result:
                 - Coin rotates in place and no longer shifts coordinates while animating.
+
+            [69] Request: Add bottle tool to RMB menu that spins and stops on a user after random 5-7 turns.
+                Changes made:
+                - Added new RMB context menu action: `🍾 Bottle`.
+                - Implemented bottle burst model with:
+                    - active board users mapped to circle participants,
+                    - random selected user,
+                    - random spin count in range 5-7,
+                    - computed final bottle rotation to stop at selected participant.
+                - Added overlay rendering:
+                    - users (nickname + emoji) positioned around a circle,
+                    - bottle emoji in center with directional indicator,
+                    - selected user highlight and result label after spin.
+                - Added viewport clamping so circle remains visible near edges.
+                - Extended context menu positioning height budget for the extra action.
+                Result:
+                - Right-click menu now supports spin-the-bottle behavior that randomly selects one active user after 5-7 spins.
+
+            [70] Request: Fix bottle not spinning during animation and not centered in the circle.
+                Changes made:
+                - Replaced mount-time transition approach with explicit keyframe spin animation (`cb-bottle-spin`) using target rotation variable.
+                - Separated bottle centering and rotation into nested elements:
+                    - outer element handles exact center placement (`translate(-50%, -50%)`),
+                    - inner element handles rotation animation only.
+                - Kept directional pointer tied to rotating inner group.
+                Result:
+                - Bottle reliably spins every time.
+                - Bottle remains precisely centered within the participant circle.
+
+            [71] Request: Remove arrow from bottle and make bottle neck point to selected user at animation end.
+                Changes made:
+                - Removed the directional arrow marker from bottle rendering.
+                - Recalibrated bottle final rotation using a bottle-neck angle offset, so the bottle emoji neck aligns to the selected user when the spin finishes.
+                Result:
+                - Spin-the-bottle now ends with the bottle neck (not an arrow) indicating the selected user.
+
+            [72] Request: Highlight chosen user nickname only after spin stops and ensure bottle points to winner nickname at end.
+                Changes made:
+                - Changed participant badges to use a delayed winner-highlight animation instead of immediate selected styling.
+                - Winner highlight now starts after bottle spin duration completes.
+                - Kept bottle final angle tied to selected participant angle with bottle-neck offset for end alignment.
+                Result:
+                - Winner nickname highlight appears only once the bottle has stopped spinning.
+                - Bottle lands pointing toward the winner by the end of the spin.
+
+            [73] Request: Fix bottle neck not pointing to nickname at end; allow more than 5-7 turns including partial turns.
+                Changes made:
+                - Reworked bottle target-angle math to explicitly aim from spin center to selected winner label direction.
+                - Updated turn count from fixed integer range to fractional spins (`5 + random*4`), allowing partial extra turns and more natural stop angles.
+                - Preserved bottle-neck offset calibration in final angle computation.
+                Result:
+                - Bottle can spin beyond 5-7 with semi-complete turns.
+                - End orientation is now locked to the selected winner direction at animation finish.
+
+            [74] Request: Fix remaining bug where bottle neck still does not point to winner at the end.
+                Changes made:
+                - Switched to deterministic end-angle targeting using selected participant angle directly.
+                - Added normalized target rotation computation to keep final orientation stable across all quadrants.
+                - Increased spin range to `6 + random*6` while preserving exact winner-facing terminal angle.
+                - Moved neck calibration into a single constant (`BOTTLE_NECK_ANGLE`) for consistent tuning.
+                Result:
+                - Bottle now ends on a normalized, winner-facing angle with reliable final orientation.
+
+            [75] Request: RMB should only summon context menu (except zoom tool), and middle mouse should pan when zoomed in.
+                Changes made:
+                - Added input gating so non-zoom tools ignore RMB pointer-down entirely.
+                - Kept zoom-tool RMB behavior for zoom-out while suppressing context-menu popup in zoom mode.
+                - Added middle-mouse drag panning when `zoomLevel > 1`, updating zoom origin continuously.
+                - Updated zoom tool tooltip to document middle-button pan behavior.
+                Result:
+                - Right mouse button is now reserved for context menu across tools (zoom tool remains the only RMB exception).
+                - Users can pan around the board with the scroll-wheel button while zoomed in.
+
+            [76] Request: Fix zoom-out showing more board than drawable area; do not zoom out past 100%.
+                Changes made:
+                - Updated zoom-step clamping minimum from `0.25` to `1`.
+                Result:
+                - Zoom-out is now capped at 100%, so users cannot zoom out beyond the drawable board.
+
+            [77] Request: Add an "Are you sure" window after pressing Clear.
+                Changes made:
+                - Added a confirmation prompt in `clearBoard` using `window.confirm("Are you sure you want to clear the board?")`.
+                - Clear action now aborts if user cancels.
+                Result:
+                - Board is only cleared after explicit user confirmation.
+
+            [78] Request: Style the clear confirmation pop-up window.
+                Changes made:
+                - Replaced native browser confirm with a styled in-app modal overlay.
+                - Added dedicated clear flow:
+                    - `clearBoard` now opens modal,
+                    - `performClearBoard` executes actual clear + broadcast + history.
+                - Added modal actions:
+                    - `Cancel` closes modal,
+                    - `Yes, clear` confirms and clears board.
+                Result:
+                - Clear confirmation is now a styled popup consistent with board UI.

@@ -149,6 +149,26 @@ type CoinflipBurst = {
   result: "Heads" | "Tails";
 };
 
+type BottleParticipant = {
+  id: string;
+  nickname: string;
+  emoji: string;
+  color: string;
+  angle: number;
+};
+
+type BottleBurst = {
+  id: string;
+  x: number;
+  y: number;
+  participants: BottleParticipant[];
+  selectedId: string;
+  bottleRotation: number;
+  duration: number;
+};
+
+const BOTTLE_NECK_ANGLE = -35;
+
 type WrappedTextLine = {
   text: string;
   y: number;
@@ -166,6 +186,22 @@ const getRandomBit = () => {
   }
 
   return Math.random() < 0.5 ? 0 : 1;
+};
+
+const getRandomIntInclusive = (min: number, max: number) => {
+  const low = Math.ceil(min);
+  const high = Math.floor(max);
+  if (high <= low) {
+    return low;
+  }
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    return low + (values[0] % (high - low + 1));
+  }
+
+  return low + Math.floor(Math.random() * (high - low + 1));
 };
 
 const DEFAULT_TEXT_STYLE: TextStyle = {
@@ -686,6 +722,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
   const isDrawingRef = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
+  const middlePanPointerIdRef = useRef<number | null>(null);
+  const middlePanLastClientRef = useRef<Point | null>(null);
   const previousPointRef = useRef<Point | null>(null);
   const selectingRef = useRef(false);
   const movingRef = useRef(false);
@@ -720,6 +758,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [confettiBursts, setConfettiBursts] = useState<ConfettiBurst[]>([]);
   const [sharknadoBursts, setSharknadoBursts] = useState<SharknadoBurst[]>([]);
   const [coinflipBursts, setCoinflipBursts] = useState<CoinflipBurst[]>([]);
+  const [bottleBursts, setBottleBursts] = useState<BottleBurst[]>([]);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -854,6 +894,64 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     }, 3800);
     confettiTimeoutsRef.current.push(timeoutId);
   }, []);
+
+  const launchBottleSpin = useCallback(
+    (x: number, y: number) => {
+      if (boardUsers.length === 0) {
+        return;
+      }
+
+      const container = containerRef.current;
+      const ringRadius = 100;
+      const centerX = container
+        ? clamp(x, ringRadius + 12, Math.max(ringRadius + 12, container.clientWidth - ringRadius - 12))
+        : x;
+      const centerY = container
+        ? clamp(y, ringRadius + 12, Math.max(ringRadius + 12, container.clientHeight - ringRadius - 12))
+        : y;
+
+      const burstId = `bottle-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const participants = boardUsers.map((user, index) => ({
+        id: user.socketId,
+        nickname: user.nickname,
+        emoji: user.animalEmoji,
+        color: user.cursorColor,
+        angle: -90 + (index * 360) / boardUsers.length,
+      }));
+
+      const selectedIndex = getRandomIntInclusive(0, participants.length - 1);
+      const selected = participants[selectedIndex];
+      if (!selected) {
+        return;
+      }
+
+      const targetAngle = selected.angle;
+      const normalizedTargetRotation = ((targetAngle - BOTTLE_NECK_ANGLE) % 360 + 360) % 360;
+      const spins = 6 + Math.random() * 6;
+      const bottleRotation = spins * 360 + normalizedTargetRotation;
+      const duration = 2400 + getRandomIntInclusive(0, 700);
+
+      setBottleBursts((previous) => [
+        ...previous,
+        {
+          id: burstId,
+          x: centerX,
+          y: centerY,
+          participants,
+          selectedId: selected.id,
+          bottleRotation,
+          duration,
+        },
+      ]);
+
+      const timeoutId = window.setTimeout(() => {
+        setBottleBursts((previous) => previous.filter((burst) => burst.id !== burstId));
+        confettiTimeoutsRef.current = confettiTimeoutsRef.current.filter((id) => id !== timeoutId);
+      }, duration + 1800);
+      confettiTimeoutsRef.current.push(timeoutId);
+    },
+    [boardUsers],
+  );
 
   const markBoardDirty = useCallback(() => {
     boardDirtyRef.current = true;
@@ -1757,6 +1855,27 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       return;
     }
 
+    if (event.button === 1 && zoomLevel > 1) {
+      pointerIdRef.current = event.pointerId;
+      middlePanPointerIdRef.current = event.pointerId;
+      middlePanLastClientRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+      canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+
+    const isZoomRmb = mode === "zoom" && event.button === 2;
+    if (event.button === 2 && mode !== "zoom") {
+      return;
+    }
+
+    if (event.button !== 0 && !isZoomRmb) {
+      return;
+    }
+
     const clickedInsideSelection = selectionRect ? pointInRect(point, selectionRect) : false;
     if (selectionRect && !clickedInsideSelection && mode !== "select") {
       setSelectionRect(null);
@@ -1791,7 +1910,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       const applyZoomStep = () => {
         setZoomOrigin(nextOrigin);
         setZoomLevel((previous) =>
-          clamp(Number((previous + 0.25 * zoomDirection).toFixed(2)), 0.25, 4),
+          clamp(Number((previous + 0.25 * zoomDirection).toFixed(2)), 1, 4),
         );
       };
 
@@ -1927,6 +2046,32 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   };
 
   const continueDrawing = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (middlePanPointerIdRef.current === event.pointerId) {
+      const canvas = canvasRef.current;
+      const previousClientPoint = middlePanLastClientRef.current;
+      if (!canvas || !previousClientPoint || zoomLevel <= 1) {
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+
+      const deltaX = event.clientX - previousClientPoint.x;
+      const deltaY = event.clientY - previousClientPoint.y;
+      middlePanLastClientRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+
+      setZoomOrigin((previous) => ({
+        x: clamp(previous.x - (deltaX / rect.width) * 100, 0, 100),
+        y: clamp(previous.y - (deltaY / rect.height) * 100, 0, 100),
+      }));
+      return;
+    }
+
     const now = Date.now();
     if (now - lastCursorEmitRef.current >= 24) {
       const canvas = canvasRef.current;
@@ -2054,6 +2199,24 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   };
 
   const stopDrawing = (event?: React.PointerEvent<HTMLCanvasElement>) => {
+    if (middlePanPointerIdRef.current !== null) {
+      const shouldStopMiddlePan = !event || middlePanPointerIdRef.current === event.pointerId;
+      if (shouldStopMiddlePan) {
+        const canvas = canvasRef.current;
+        if (event && canvas && middlePanPointerIdRef.current === event.pointerId) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+
+        if (pointerIdRef.current === middlePanPointerIdRef.current) {
+          pointerIdRef.current = null;
+        }
+
+        middlePanPointerIdRef.current = null;
+        middlePanLastClientRef.current = null;
+        return;
+      }
+    }
+
     if (mode === "zoom") {
       const canvas = canvasRef.current;
       if (event && canvas && pointerIdRef.current === event.pointerId) {
@@ -2232,7 +2395,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     strokeStartSnapshotRef.current = null;
   };
 
-  const clearBoard = () => {
+  const performClearBoard = useCallback(() => {
     const beforeSnapshot = getCanvasSnapshot();
     handleClear();
     socketRef.current?.emit("clear-board");
@@ -2240,6 +2403,10 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       before: beforeSnapshot,
       after: getCanvasSnapshot(),
     });
+  }, [getCanvasSnapshot, handleClear, pushHistoryEntry]);
+
+  const clearBoard = () => {
+    setShowClearConfirm(true);
   };
 
   const emitCursorOnEnter = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -3679,7 +3846,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <button
               type="button"
               onClick={() => setMode("zoom")}
-              title="Magnifier (G) · LMB in / RMB out · hold for continuous zoom"
+              title="Magnifier (G) · LMB in / RMB out · hold for continuous zoom · MMB drag to pan when zoomed"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "zoom" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
@@ -3850,6 +4017,35 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       </header>
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-2 p-3 sm:p-4">
+        {showClearConfirm ? (
+          <div className="fixed inset-0 z-[200] grid place-items-center bg-zinc-900/45 px-4 backdrop-blur-[1px]">
+            <div className="w-full max-w-sm rounded-xl border border-zinc-300 bg-white p-5 shadow-xl">
+              <h2 className="text-base font-semibold text-zinc-900">Clear board?</h2>
+              <p className="mt-2 text-sm text-zinc-600">
+                Are you sure you want to clear the board? This action affects all users in this board.
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowClearConfirm(false)}
+                  className="rounded-md bg-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowClearConfirm(false);
+                    performClearBoard();
+                  }}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-red-700"
+                >
+                  Yes, clear
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <style jsx global>{`
           .cb-block-spoiler {
             filter: blur(6px);
@@ -4044,6 +4240,53 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
               transform: translate(-50%, 8px) scale(0.96);
             }
           }
+
+          @keyframes cb-bottle-result {
+            0% {
+              opacity: 0;
+              transform: translate(-50%, -4px) scale(0.95);
+            }
+
+            12% {
+              opacity: 1;
+              transform: translate(-50%, 0) scale(1);
+            }
+
+            82% {
+              opacity: 1;
+              transform: translate(-50%, 0) scale(1);
+            }
+
+            100% {
+              opacity: 0;
+              transform: translate(-50%, 8px) scale(0.96);
+            }
+          }
+
+          @keyframes cb-bottle-spin {
+            0% {
+              transform: rotate(0deg);
+            }
+
+            100% {
+              transform: rotate(var(--cb-bottle-rotation));
+            }
+          }
+
+          @keyframes cb-bottle-winner {
+            0% {
+              background: white;
+              border-color: rgb(212 212 216);
+              transform: translate(-50%, -50%) scale(1);
+            }
+
+            100% {
+              background: rgb(236 253 245);
+              border-color: rgb(16 185 129);
+              box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+              transform: translate(-50%, -50%) scale(1.05);
+            }
+          }
         `}</style>
         <div className="flex items-center justify-between text-sm text-zinc-500">
           <span>{isConnected ? "Connected" : "Connecting..."}</span>
@@ -4070,6 +4313,9 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             onContextMenu={(event) => {
               event.preventDefault();
               clearZoomHold();
+              if (mode === "zoom") {
+                return;
+              }
               const point = getCanvasPoint(event);
               if (!point) {
                 return;
@@ -4082,13 +4328,75 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
               }
 
               const menuWidth = 180;
-              const menuHeight = 282;
+              const menuHeight = 320;
               const x = clamp(event.clientX - rect.left, 8, Math.max(8, rect.width - menuWidth));
               const y = clamp(event.clientY - rect.top, 8, Math.max(8, rect.height - menuHeight));
               lastContextMenuPointRef.current = point;
               setContextMenuState({ x, y });
             }}
           />
+
+          {bottleBursts.map((burst) => (
+            <div key={burst.id} className="pointer-events-none absolute inset-0 z-[133] overflow-hidden">
+              {burst.participants.map((participant) => {
+                const angle = (participant.angle * Math.PI) / 180;
+                const px = burst.x + Math.cos(angle) * 100;
+                const py = burst.y + Math.sin(angle) * 100;
+                const isSelected = participant.id === burst.selectedId;
+
+                return (
+                  <div
+                    key={participant.id}
+                    className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-zinc-300 bg-white px-2 py-1 text-xs font-semibold shadow"
+                    style={{
+                      left: `${px}px`,
+                      top: `${py}px`,
+                      color: participant.color,
+                      animation: isSelected
+                        ? `cb-bottle-winner 320ms ease-out ${Math.round(burst.duration)}ms both`
+                        : undefined,
+                    }}
+                  >
+                    {participant.emoji} {participant.nickname}
+                  </div>
+                );
+              })}
+
+              <div
+                className="absolute h-20 w-20 -translate-x-1/2 -translate-y-1/2"
+                style={{
+                  left: `${burst.x}px`,
+                  top: `${burst.y}px`,
+                  transform: "translate(-50%, -50%)",
+                  transformOrigin: "center center",
+                }}
+              >
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    ["--cb-bottle-rotation" as string]: `${burst.bottleRotation}deg`,
+                    animation: `cb-bottle-spin ${burst.duration}ms cubic-bezier(0.14, 0.86, 0.2, 1) forwards`,
+                    transformOrigin: "center center",
+                  }}
+                >
+                  <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-5xl">🍾</span>
+                </div>
+              </div>
+
+              <div
+                className="absolute whitespace-nowrap rounded-full border border-zinc-300 bg-white px-3 py-1 text-xs font-semibold text-zinc-700 shadow"
+                style={{
+                  opacity: 0,
+                  left: `${burst.x}px`,
+                  top: `${burst.y + 126}px`,
+                  animation: `cb-bottle-result 1.6s ease-out ${Math.round(burst.duration + 150)}ms both`,
+                }}
+              >
+                🍾 Selected: {burst.participants.find((participant) => participant.id === burst.selectedId)?.emoji} {" "}
+                {burst.participants.find((participant) => participant.id === burst.selectedId)?.nickname}
+              </div>
+            </div>
+          ))}
 
           {coinflipBursts.map((flip) => (
             <div key={flip.id} className="pointer-events-none absolute inset-0 z-[132] overflow-hidden">
@@ -4300,6 +4608,19 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                 }}
               >
                 🪙 Coinflip
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  const popAt = contextMenuState;
+                  closeBoardContextMenu();
+                  if (popAt) {
+                    launchBottleSpin(popAt.x + 18, popAt.y + 18);
+                  }
+                }}
+              >
+                🍾 Bottle
               </button>
             </div>
           ) : null}
