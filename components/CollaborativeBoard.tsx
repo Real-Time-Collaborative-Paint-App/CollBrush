@@ -91,6 +91,12 @@ type SelectionTransformSession = {
   affectedObjects: BoardObject[];
 };
 
+type WrappedTextLine = {
+  text: string;
+  y: number;
+  width: number;
+};
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
@@ -205,6 +211,93 @@ const pointInRect = (point: Point, rect: SelectionRect) =>
   point.x <= rect.x + rect.width &&
   point.y >= rect.y &&
   point.y <= rect.y + rect.height;
+
+const extractPlainText = (value: string) => {
+  const markup = toMarkupContent(value);
+  if (!markup) {
+    return "";
+  }
+
+  if (typeof document === "undefined") {
+    return markup.replace(/<br\s*\/?\s*>/gi, "\n").replace(/<[^>]+>/g, "");
+  }
+
+  const node = document.createElement("div");
+  node.innerHTML = markup;
+  return node.innerText || node.textContent || "";
+};
+
+const drawWrappedText = (
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  maxHeight: number,
+  lineHeight: number,
+  strikethrough: boolean,
+) => {
+  if (maxWidth <= 1 || maxHeight <= 1) {
+    return;
+  }
+
+  const lines: WrappedTextLine[] = [];
+  const paragraphs = text.replaceAll("\r\n", "\n").split("\n");
+  let currentY = y;
+
+  for (const paragraph of paragraphs) {
+    const words = paragraph.split(/\s+/).filter(Boolean);
+
+    if (words.length === 0) {
+      if (currentY + lineHeight > y + maxHeight) {
+        break;
+      }
+
+      lines.push({ text: "", y: currentY, width: 0 });
+      currentY += lineHeight;
+      continue;
+    }
+
+    let line = words[0];
+    for (let index = 1; index < words.length; index += 1) {
+      const next = `${line} ${words[index]}`;
+      if (ctx.measureText(next).width <= maxWidth) {
+        line = next;
+      } else {
+        if (currentY + lineHeight > y + maxHeight) {
+          break;
+        }
+
+        lines.push({ text: line, y: currentY, width: ctx.measureText(line).width });
+        currentY += lineHeight;
+        line = words[index];
+      }
+    }
+
+    if (currentY + lineHeight > y + maxHeight) {
+      break;
+    }
+
+    lines.push({ text: line, y: currentY, width: ctx.measureText(line).width });
+    currentY += lineHeight;
+  }
+
+  for (const line of lines) {
+    if (line.text) {
+      ctx.fillText(line.text, x, line.y);
+    }
+
+    if (strikethrough && line.text) {
+      const strikeY = line.y + lineHeight * 0.56;
+      ctx.beginPath();
+      ctx.moveTo(x, strikeY);
+      ctx.lineTo(x + line.width, strikeY);
+      ctx.lineWidth = Math.max(1, lineHeight * 0.07);
+      ctx.strokeStyle = ctx.fillStyle as string;
+      ctx.stroke();
+    }
+  }
+};
 
 const drawSegmentOnContext = (ctx: CanvasRenderingContext2D, segment: DrawSegment) => {
   ctx.save();
@@ -509,6 +602,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const shapeSessionRef = useRef<ShapeSession | null>(null);
   const shapeMenuRef = useRef<HTMLDivElement | null>(null);
   const shapeMenuContainerRef = useRef<HTMLDivElement | null>(null);
+  const screenshotMenuContainerRef = useRef<HTMLDivElement | null>(null);
   const selectionTransformSessionRef = useRef<SelectionTransformSession | null>(null);
   const zoomHoldTimeoutRef = useRef<number | null>(null);
   const zoomHoldIntervalRef = useRef<number | null>(null);
@@ -546,6 +640,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [zoomOrigin, setZoomOrigin] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
   const [activeShape, setActiveShape] = useState<ShapeType>("rectangle");
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
+  const [screenshotMenuOpen, setScreenshotMenuOpen] = useState(false);
+  const [pendingScreenshotSelection, setPendingScreenshotSelection] = useState(false);
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -718,6 +814,154 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     }
 
     return canvas.toDataURL("image/png");
+  }, []);
+
+  const renderBoardToCanvas = useCallback(() => {
+    const sourceCanvas = canvasRef.current;
+    if (!sourceCanvas) {
+      return null;
+    }
+
+    const outputCanvas = document.createElement("canvas");
+    outputCanvas.width = sourceCanvas.width;
+    outputCanvas.height = sourceCanvas.height;
+
+    const ctx = outputCanvas.getContext("2d");
+    if (!ctx) {
+      return null;
+    }
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+    ctx.drawImage(sourceCanvas, 0, 0);
+
+    for (const object of Object.values(boardObjects)) {
+      const style = {
+        ...DEFAULT_TEXT_STYLE,
+        ...object.style,
+      };
+      const width = Math.max(1, Math.floor(object.width));
+      const height = Math.max(1, Math.floor(object.height));
+      const x = Math.floor(object.x);
+      const y = Math.floor(object.y);
+
+      ctx.save();
+      ctx.translate(x + width / 2, y + height / 2);
+      ctx.rotate(((object.rotation ?? 0) * Math.PI) / 180);
+      ctx.scale(object.flipX ? -1 : 1, object.flipY ? -1 : 1);
+      ctx.translate(-width / 2, -height / 2);
+
+      if (object.type === "sticky") {
+        ctx.fillStyle = "#E1AD01";
+        ctx.strokeStyle = "#B45309";
+      } else {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.85)";
+      }
+
+      ctx.lineWidth = 1;
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeRect(0, 0, width, height);
+
+      if (style.spoiler) {
+        ctx.fillStyle = "rgba(15, 23, 42, 0.82)";
+        ctx.fillRect(0, 0, width, height);
+        ctx.restore();
+        continue;
+      }
+
+      const fontSize = Math.max(8, style.fontSize || DEFAULT_TEXT_STYLE.fontSize);
+      const fontFamily = style.fontFamily || DEFAULT_TEXT_STYLE.fontFamily;
+      const fontWeight = style.bold ? "700" : "400";
+      const fontStyle = style.italic ? "italic" : "normal";
+      ctx.fillStyle = style.color || DEFAULT_TEXT_STYLE.color;
+      ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
+      ctx.textBaseline = "top";
+
+      const text = extractPlainText(object.content);
+      const padding = object.type === "sticky" ? 12 : 6;
+      const lineHeight = Math.max(12, Math.round(fontSize * 1.35));
+      drawWrappedText(
+        ctx,
+        text,
+        padding,
+        padding,
+        Math.max(1, width - padding * 2),
+        Math.max(1, height - padding * 2),
+        lineHeight,
+        Boolean(style.strikethrough),
+      );
+
+      ctx.restore();
+    }
+
+    return outputCanvas;
+  }, [boardObjects]);
+
+  const downloadPngScreenshot = useCallback(
+    (scope: "board" | "selection", rect?: SelectionRect) => {
+      const composedCanvas = renderBoardToCanvas();
+      if (!composedCanvas) {
+        return;
+      }
+
+      let exportCanvas = composedCanvas;
+      if (scope === "selection" && rect) {
+        const cropX = clamp(Math.floor(rect.x), 0, Math.max(0, composedCanvas.width - 1));
+        const cropY = clamp(Math.floor(rect.y), 0, Math.max(0, composedCanvas.height - 1));
+        const cropWidth = clamp(
+          Math.floor(rect.width),
+          1,
+          Math.max(1, composedCanvas.width - cropX),
+        );
+        const cropHeight = clamp(
+          Math.floor(rect.height),
+          1,
+          Math.max(1, composedCanvas.height - cropY),
+        );
+
+        const croppedCanvas = document.createElement("canvas");
+        croppedCanvas.width = cropWidth;
+        croppedCanvas.height = cropHeight;
+        const cropCtx = croppedCanvas.getContext("2d");
+        if (!cropCtx) {
+          return;
+        }
+
+        cropCtx.fillStyle = "#ffffff";
+        cropCtx.fillRect(0, 0, cropWidth, cropHeight);
+        cropCtx.drawImage(
+          composedCanvas,
+          cropX,
+          cropY,
+          cropWidth,
+          cropHeight,
+          0,
+          0,
+          cropWidth,
+          cropHeight,
+        );
+        exportCanvas = croppedCanvas;
+      }
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const link = document.createElement("a");
+      link.href = exportCanvas.toDataURL("image/png");
+      link.download = `${boardId}-${scope}-${timestamp}.png`;
+      link.click();
+    },
+    [boardId, renderBoardToCanvas],
+  );
+
+  const startSelectionScreenshotMode = useCallback(() => {
+    setScreenshotMenuOpen(false);
+    setShapeMenuOpen(false);
+    setPendingScreenshotSelection(true);
+    setMode("select");
+    setSelectionRect(null);
+    setSelectionPreviewRect(null);
+    setSelectionRotation(0);
+    setSelectionPreviewRotation(null);
   }, []);
 
   const upsertBoardObject = useCallback((object: BoardObject, broadcast: boolean) => {
@@ -1441,6 +1685,16 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
           if (selectionPreviewRotation !== null) {
             setSelectionRotation(selectionPreviewRotation);
             setSelectionPreviewRotation(null);
+          }
+
+          if (pendingScreenshotSelection) {
+            downloadPngScreenshot("selection", rect);
+            setPendingScreenshotSelection(false);
+            setSelectionRect(null);
+            setSelectionPreviewRect(null);
+            setSelectionRotation(0);
+            setSelectionPreviewRotation(null);
+            setMode("drag");
           }
         }
       }
@@ -2544,18 +2798,23 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
-      if (!shapeMenuOpen) {
+      if (!shapeMenuOpen && !screenshotMenuOpen) {
         return;
       }
 
-      const container = shapeMenuContainerRef.current;
       const target = event.target as Node | null;
-      if (!container || !target) {
+      if (!target) {
         return;
       }
 
-      if (!container.contains(target)) {
+      const shapeContainer = shapeMenuContainerRef.current;
+      if (shapeMenuOpen && shapeContainer && !shapeContainer.contains(target)) {
         setShapeMenuOpen(false);
+      }
+
+      const screenshotContainer = screenshotMenuContainerRef.current;
+      if (screenshotMenuOpen && screenshotContainer && !screenshotContainer.contains(target)) {
+        setScreenshotMenuOpen(false);
       }
     };
 
@@ -2563,7 +2822,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     return () => {
       window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [shapeMenuOpen]);
+  }, [shapeMenuOpen, screenshotMenuOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2903,7 +3162,10 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <div ref={shapeMenuContainerRef} className="relative">
               <button
                 type="button"
-                onClick={() => setShapeMenuOpen((previous) => !previous)}
+                onClick={() => {
+                  setShapeMenuOpen((previous) => !previous);
+                  setScreenshotMenuOpen(false);
+                }}
                 title="Shapes (C)"
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                   mode === "shape" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
@@ -2936,6 +3198,41 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                       <span>{label}</span>
                     </button>
                   ))}
+                </div>
+              ) : null}
+            </div>
+
+            <div ref={screenshotMenuContainerRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setScreenshotMenuOpen((previous) => !previous);
+                  setShapeMenuOpen(false);
+                }}
+                title="Screenshot"
+                className="rounded-md bg-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-300"
+              >
+                📸 Screenshot
+              </button>
+              {screenshotMenuOpen ? (
+                <div className="absolute left-0 top-full z-[120] mt-1 w-52 rounded-md border border-zinc-300 bg-white p-1 shadow-lg">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                    onClick={() => {
+                      setScreenshotMenuOpen(false);
+                      downloadPngScreenshot("board");
+                    }}
+                  >
+                    🖼️ Entire board
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                    onClick={startSelectionScreenshotMode}
+                  >
+                    ⛶ Selected area
+                  </button>
                 </div>
               ) : null}
             </div>

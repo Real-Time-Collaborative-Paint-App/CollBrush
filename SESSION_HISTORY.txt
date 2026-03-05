@@ -431,3 +431,22 @@ Date: 2026-03-04
                 Result:
                 - Selected area can be dragged from bottom-left corner handle.
                 - Drag tool interactions on selected regions and text/sticky objects work correctly on first press.
+
+            [40] Request: Add screenshot tool with options for entire board or selected area, downloading PNG files.
+                Changes made:
+                - Added a new `📸 Screenshot` tool button with dropdown options:
+                    - `🖼️ Entire board`
+                    - `⛶ Selected area`
+                - Implemented board PNG export that composes current canvas pixels and text/sticky board objects into an offscreen canvas.
+                - Added selected-area screenshot mode that switches to selection flow, waits for user drag-select, then auto-downloads only that region as PNG.
+                - Added click-outside handling to close screenshot dropdown (alongside existing shape dropdown behavior).
+                Result:
+                - Users can export the full board to PNG in one click.
+                - Users can choose selected-area export, draw a selection box, and receive a cropped PNG download.
+
+            [41] Request: Add a white background to each screenshot.
+                Changes made:
+                - Updated screenshot render pipeline to fill the export canvas with solid white before drawing board content.
+                - Updated selected-area crop export to also initialize cropped output with solid white before drawing cropped pixels.
+                Result:
+                - All downloaded screenshots (entire board and selected area) now have a white background instead of transparency.
