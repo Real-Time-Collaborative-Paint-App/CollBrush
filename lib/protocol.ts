@@ -40,6 +40,8 @@ export interface TextObject {
   width: number;
   height: number;
   rotation: number;
+  flipX: boolean;
+  flipY: boolean;
   content: string;
   style: TextStyle;
 }
@@ -52,6 +54,8 @@ export interface StickyObject {
   width: number;
   height: number;
   rotation: number;
+  flipX: boolean;
+  flipY: boolean;
   content: string;
   style: TextStyle;
 }

@@ -24,7 +24,18 @@ type CollaborativeBoardProps = {
   nickname: string;
 };
 
-type ToolMode = DrawMode | "bucket" | "select" | "drag" | "picker" | "text" | "sticky";
+type ToolMode = DrawMode | "bucket" | "select" | "drag" | "picker" | "text" | "sticky" | "zoom" | "shape";
+
+type ShapeType =
+  | "rectangle"
+  | "ellipse"
+  | "line"
+  | "star"
+  | "star-of-david"
+  | "northern-star"
+  | "arrow"
+  | "double-arrow"
+  | "heart";
 
 type SelectionRect = {
   x: number;
@@ -55,6 +66,29 @@ type CreateObjectSession = {
   mode: "text" | "sticky";
   startPoint: Point;
   currentPoint: Point;
+};
+
+type ShapeSession = {
+  pointerId: number;
+  startPoint: Point;
+  currentPoint: Point;
+  baseImage: ImageData;
+  beforeSnapshot: string;
+};
+
+type SelectionTransformMode = "resize" | "rotate";
+
+type SelectionTransformSession = {
+  mode: SelectionTransformMode;
+  startRect: SelectionRect;
+  startPoint: Point;
+  center: Point;
+  startDistance: number;
+  startAngle: number;
+  baseImage: ImageData;
+  selectionCanvas: HTMLCanvasElement;
+  beforeSnapshot: string;
+  affectedObjects: BoardObject[];
 };
 
 const clamp = (value: number, min: number, max: number) =>
@@ -99,6 +133,8 @@ const normalizeBoardObject = (object: BoardObject): BoardObject => {
       width: object.width || 260,
       height: object.height || 120,
       rotation: object.rotation ?? 0,
+      flipX: (object as { flipX?: boolean }).flipX ?? false,
+      flipY: (object as { flipY?: boolean }).flipY ?? false,
       style: {
         ...DEFAULT_TEXT_STYLE,
         ...object.style,
@@ -111,6 +147,8 @@ const normalizeBoardObject = (object: BoardObject): BoardObject => {
     width: object.width || 220,
     height: object.height || 160,
     rotation: object.rotation ?? 0,
+    flipX: (object as { flipX?: boolean }).flipX ?? false,
+    flipY: (object as { flipY?: boolean }).flipY ?? false,
     style: {
       ...DEFAULT_TEXT_STYLE,
       ...(object.style ?? {}),
@@ -260,6 +298,190 @@ const drawReplaceOnContext = async (
   });
 };
 
+const drawShapeOutline = (
+  ctx: CanvasRenderingContext2D,
+  shape: ShapeType,
+  from: Point,
+  to: Point,
+  strokeColor: string,
+  strokeSize: number,
+) => {
+  const rect = normalizeRect(from, to);
+
+  const drawPolygon = (points: Point[]) => {
+    if (points.length < 2) {
+      return;
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length; index += 1) {
+      ctx.lineTo(points[index].x, points[index].y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  };
+
+  const createStarPoints = (arms: number, innerScale: number) => {
+    const centerX = rect.x + rect.width / 2;
+    const centerY = rect.y + rect.height / 2;
+    const outerRadius = Math.max(2, Math.min(rect.width, rect.height) / 2);
+    const innerRadius = outerRadius * innerScale;
+    const points: Point[] = [];
+
+    for (let index = 0; index < arms * 2; index += 1) {
+      const angle = (-Math.PI / 2) + (index * Math.PI) / arms;
+      const radius = index % 2 === 0 ? outerRadius : innerRadius;
+      points.push({
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      });
+    }
+
+    return points;
+  };
+
+  ctx.save();
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = clamp(strokeSize, 1, 40);
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  if (shape === "rectangle") {
+    ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.restore();
+    return;
+  }
+
+  if (shape === "ellipse") {
+    ctx.beginPath();
+    ctx.ellipse(
+      rect.x + rect.width / 2,
+      rect.y + rect.height / 2,
+      Math.max(1, rect.width / 2),
+      Math.max(1, rect.height / 2),
+      0,
+      0,
+      Math.PI * 2,
+    );
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  if (shape === "star") {
+    drawPolygon(createStarPoints(5, 0.45));
+    ctx.restore();
+    return;
+  }
+
+  if (shape === "northern-star") {
+    drawPolygon([
+      { x: rect.x + rect.width * (12 / 24), y: rect.y + rect.height * (2 / 24) },
+      { x: rect.x + rect.width * (14.5 / 24), y: rect.y + rect.height * (8.8 / 24) },
+      { x: rect.x + rect.width * (22 / 24), y: rect.y + rect.height * (12 / 24) },
+      { x: rect.x + rect.width * (14.5 / 24), y: rect.y + rect.height * (15.2 / 24) },
+      { x: rect.x + rect.width * (12 / 24), y: rect.y + rect.height * (22 / 24) },
+      { x: rect.x + rect.width * (9.5 / 24), y: rect.y + rect.height * (15.2 / 24) },
+      { x: rect.x + rect.width * (2 / 24), y: rect.y + rect.height * (12 / 24) },
+      { x: rect.x + rect.width * (9.5 / 24), y: rect.y + rect.height * (8.8 / 24) },
+    ]);
+    ctx.restore();
+    return;
+  }
+
+  if (shape === "star-of-david") {
+    const centerX = rect.x + rect.width / 2;
+    const centerY = rect.y + rect.height / 2;
+    const radius = Math.max(2, Math.min(rect.width, rect.height) / 2);
+    const triangle = (offset: number) => {
+      const points: Point[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        const angle = offset + index * ((Math.PI * 2) / 3);
+        points.push({
+          x: centerX + Math.cos(angle) * radius,
+          y: centerY + Math.sin(angle) * radius,
+        });
+      }
+      return points;
+    };
+
+    drawPolygon(triangle(-Math.PI / 2));
+    drawPolygon(triangle(Math.PI / 2));
+    ctx.restore();
+    return;
+  }
+
+  if (shape === "arrow") {
+    drawPolygon([
+      { x: rect.x, y: rect.y + rect.height * 0.35 },
+      { x: rect.x + rect.width * 0.62, y: rect.y + rect.height * 0.35 },
+      { x: rect.x + rect.width * 0.62, y: rect.y },
+      { x: rect.x + rect.width, y: rect.y + rect.height / 2 },
+      { x: rect.x + rect.width * 0.62, y: rect.y + rect.height },
+      { x: rect.x + rect.width * 0.62, y: rect.y + rect.height * 0.65 },
+      { x: rect.x, y: rect.y + rect.height * 0.65 },
+    ]);
+    ctx.restore();
+    return;
+  }
+
+  if (shape === "double-arrow") {
+    drawPolygon([
+      { x: rect.x, y: rect.y + rect.height / 2 },
+      { x: rect.x + rect.width * 0.2, y: rect.y },
+      { x: rect.x + rect.width * 0.2, y: rect.y + rect.height * 0.3 },
+      { x: rect.x + rect.width * 0.8, y: rect.y + rect.height * 0.3 },
+      { x: rect.x + rect.width * 0.8, y: rect.y },
+      { x: rect.x + rect.width, y: rect.y + rect.height / 2 },
+      { x: rect.x + rect.width * 0.8, y: rect.y + rect.height },
+      { x: rect.x + rect.width * 0.8, y: rect.y + rect.height * 0.7 },
+      { x: rect.x + rect.width * 0.2, y: rect.y + rect.height * 0.7 },
+      { x: rect.x + rect.width * 0.2, y: rect.y + rect.height },
+    ]);
+    ctx.restore();
+    return;
+  }
+
+  if (shape === "heart") {
+    const samples = 96;
+    const rawPoints: Point[] = [];
+    for (let index = 0; index <= samples; index += 1) {
+      const t = (index / samples) * Math.PI * 2;
+      const x = 16 * Math.pow(Math.sin(t), 3);
+      const y = -(
+        13 * Math.cos(t) -
+        5 * Math.cos(2 * t) -
+        2 * Math.cos(3 * t) -
+        Math.cos(4 * t)
+      );
+      rawPoints.push({ x, y });
+    }
+
+    const minX = Math.min(...rawPoints.map((point) => point.x));
+    const maxX = Math.max(...rawPoints.map((point) => point.x));
+    const minY = Math.min(...rawPoints.map((point) => point.y));
+    const maxY = Math.max(...rawPoints.map((point) => point.y));
+    const width = Math.max(1, maxX - minX);
+    const height = Math.max(1, maxY - minY);
+
+    const mappedPoints = rawPoints.map((point) => ({
+      x: rect.x + ((point.x - minX) / width) * rect.width,
+      y: rect.y + ((point.y - minY) / height) * rect.height,
+    }));
+
+    drawPolygon(mappedPoints);
+    ctx.restore();
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  ctx.restore();
+};
+
 export default function CollaborativeBoard({ boardId, userId, nickname }: CollaborativeBoardProps) {
   const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -284,6 +506,12 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const rotatingObjectIdRef = useRef<string | null>(null);
   const objectRotateSessionRef = useRef<RotateSession | null>(null);
   const objectCreateSessionRef = useRef<CreateObjectSession | null>(null);
+  const shapeSessionRef = useRef<ShapeSession | null>(null);
+  const shapeMenuRef = useRef<HTMLDivElement | null>(null);
+  const shapeMenuContainerRef = useRef<HTMLDivElement | null>(null);
+  const selectionTransformSessionRef = useRef<SelectionTransformSession | null>(null);
+  const zoomHoldTimeoutRef = useRef<number | null>(null);
+  const zoomHoldIntervalRef = useRef<number | null>(null);
   const editingElementRef = useRef<HTMLDivElement | null>(null);
   const activeToolbarRef = useRef<HTMLDivElement | null>(null);
   const selectedTextRangeRef = useRef<Range | null>(null);
@@ -306,12 +534,18 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [isConnected, setIsConnected] = useState(false);
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
   const [selectionPreviewRect, setSelectionPreviewRect] = useState<SelectionRect | null>(null);
+  const [selectionRotation, setSelectionRotation] = useState(0);
+  const [selectionPreviewRotation, setSelectionPreviewRotation] = useState<number | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 1, height: 1 });
   const [boardObjects, setBoardObjects] = useState<Record<string, BoardObject>>({});
   const [activeObjectId, setActiveObjectId] = useState<string | null>(null);
   const [editingObjectId, setEditingObjectId] = useState<string | null>(null);
   const [objectCreatePreview, setObjectCreatePreview] = useState<SelectionRect | null>(null);
   const [hoveredObjectId, setHoveredObjectId] = useState<string | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [zoomOrigin, setZoomOrigin] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
+  const [activeShape, setActiveShape] = useState<ShapeType>("rectangle");
+  const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -551,6 +785,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       ];
       setSelectionRect(null);
       setSelectionPreviewRect(null);
+      setSelectionRotation(0);
+      setSelectionPreviewRotation(null);
       movingBaseImageRef.current = null;
       movingSelectionImageRef.current = null;
       applyReplaceActionToCanvas(replace);
@@ -575,6 +811,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     setBoardObjects({});
     setSelectionRect(null);
     setSelectionPreviewRect(null);
+    setSelectionRotation(0);
+    setSelectionPreviewRotation(null);
     movingBaseImageRef.current = null;
     movingSelectionImageRef.current = null;
   }, []);
@@ -715,6 +953,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       ];
       setSelectionRect(null);
       setSelectionPreviewRect(null);
+      setSelectionRotation(0);
+      setSelectionPreviewRotation(null);
       movingBaseImageRef.current = null;
       movingSelectionImageRef.current = null;
       applyReplaceActionToCanvas(replace);
@@ -790,6 +1030,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     if (selectionRect && !clickedInsideSelection && mode !== "select") {
       setSelectionRect(null);
       setSelectionPreviewRect(null);
+      setSelectionRotation(0);
+      setSelectionPreviewRotation(null);
       movingRef.current = false;
       moveOffsetRef.current = null;
       movingBaseImageRef.current = null;
@@ -799,6 +1041,56 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     setActiveObjectId(null);
     setEditingObjectId(null);
+
+    if (mode === "zoom") {
+      const rect = canvas.getBoundingClientRect();
+      let nextOrigin = zoomOrigin;
+      if (rect.width > 0 && rect.height > 0) {
+        const nextOriginX = clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100);
+        const nextOriginY = clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100);
+        nextOrigin = { x: nextOriginX, y: nextOriginY };
+        setZoomOrigin(nextOrigin);
+      }
+
+      pointerIdRef.current = event.pointerId;
+      canvas.setPointerCapture(event.pointerId);
+
+      clearZoomHold();
+      const zoomDirection = event.button === 2 ? -1 : 1;
+      const applyZoomStep = () => {
+        setZoomOrigin(nextOrigin);
+        setZoomLevel((previous) =>
+          clamp(Number((previous + 0.25 * zoomDirection).toFixed(2)), 0.25, 4),
+        );
+      };
+
+      applyZoomStep();
+      zoomHoldTimeoutRef.current = window.setTimeout(() => {
+        zoomHoldIntervalRef.current = window.setInterval(() => {
+          applyZoomStep();
+        }, 80);
+      }, 200);
+
+      return;
+    }
+
+    if (mode === "shape") {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        return;
+      }
+
+      pointerIdRef.current = event.pointerId;
+      canvas.setPointerCapture(event.pointerId);
+      shapeSessionRef.current = {
+        pointerId: event.pointerId,
+        startPoint: point,
+        currentPoint: point,
+        baseImage: ctx.getImageData(0, 0, canvas.width, canvas.height),
+        beforeSnapshot: getCanvasSnapshot(),
+      };
+      return;
+    }
 
     if (mode === "text" || mode === "sticky") {
       pointerIdRef.current = event.pointerId;
@@ -865,6 +1157,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       if (connectedRegion) {
         setSelectionRect(connectedRegion);
         setSelectionPreviewRect(connectedRegion);
+        setSelectionRotation(0);
+        setSelectionPreviewRotation(null);
         if (beginSelectionMove(canvas, point, connectedRegion)) {
           return;
         }
@@ -888,6 +1182,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       const nextRect = normalizeRect(point, point);
       setSelectionRect(nextRect);
       setSelectionPreviewRect(nextRect);
+      setSelectionRotation(0);
+      setSelectionPreviewRotation(null);
       return;
     }
 
@@ -915,6 +1211,26 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
           lastCursorEmitRef.current = now;
         }
       }
+    }
+
+    const shapeSession = shapeSessionRef.current;
+    if (mode === "shape" && shapeSession && pointerIdRef.current === event.pointerId) {
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        return;
+      }
+
+      const ctx = canvas.getContext("2d");
+      const point = getCanvasPoint(event);
+      if (!ctx || !point) {
+        return;
+      }
+
+      shapeSession.currentPoint = point;
+      ctx.putImageData(shapeSession.baseImage, 0, 0);
+      drawShapeOutline(ctx, activeShape, shapeSession.startPoint, shapeSession.currentPoint, color, brushSize);
+      emitSelectionMovePreview();
+      return;
     }
 
     if (mode === "select" || mode === "drag") {
@@ -1007,6 +1323,49 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   };
 
   const stopDrawing = (event?: React.PointerEvent<HTMLCanvasElement>) => {
+    if (mode === "zoom") {
+      const canvas = canvasRef.current;
+      if (event && canvas && pointerIdRef.current === event.pointerId) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+
+      pointerIdRef.current = null;
+      clearZoomHold();
+      return;
+    }
+
+    const shapeSession = shapeSessionRef.current;
+    if (shapeSession) {
+      const canvas = canvasRef.current;
+      if (event && pointerIdRef.current === event.pointerId) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+
+      if (canvas) {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.putImageData(shapeSession.baseImage, 0, 0);
+          drawShapeOutline(
+            ctx,
+            activeShape,
+            shapeSession.startPoint,
+            shapeSession.currentPoint,
+            color,
+            brushSize,
+          );
+          commitCanvasSnapshot();
+          pushHistoryEntry({
+            before: shapeSession.beforeSnapshot,
+            after: getCanvasSnapshot(),
+          });
+        }
+      }
+
+      shapeSessionRef.current = null;
+      pointerIdRef.current = null;
+      return;
+    }
+
     const createSession = objectCreateSessionRef.current;
     if (createSession) {
       const canvas = canvasRef.current;
@@ -1028,6 +1387,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
               width: clamp(rect.width, minWidth, Math.max(minWidth, canvas?.width ?? 1200)),
               height: clamp(rect.height, minHeight, Math.max(minHeight, canvas?.height ?? 900)),
               rotation: 0,
+              flipX: false,
+              flipY: false,
               content: "",
               style: { ...DEFAULT_TEXT_STYLE },
             }
@@ -1039,6 +1400,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
               width: clamp(rect.width, minWidth, Math.max(minWidth, canvas?.width ?? 1200)),
               height: clamp(rect.height, minHeight, Math.max(minHeight, canvas?.height ?? 900)),
               rotation: 0,
+              flipX: false,
+              flipY: false,
               content: "",
               style: {
                 ...DEFAULT_TEXT_STYLE,
@@ -1071,8 +1434,14 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         if (!rect || rect.width < 2 || rect.height < 2) {
           setSelectionRect(null);
           setSelectionPreviewRect(null);
+          setSelectionRotation(0);
+          setSelectionPreviewRotation(null);
         } else {
           setSelectionRect(rect);
+          if (selectionPreviewRotation !== null) {
+            setSelectionRotation(selectionPreviewRotation);
+            setSelectionPreviewRotation(null);
+          }
         }
       }
 
@@ -1081,6 +1450,10 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         const target = selectionPreviewRect;
         if (target) {
           setSelectionRect(target);
+          if (selectionPreviewRotation !== null) {
+            setSelectionRotation(selectionPreviewRotation);
+            setSelectionPreviewRotation(null);
+          }
           commitCanvasSnapshot();
           pushHistoryEntry({
             before: selectionMoveStartSnapshotRef.current ?? "",
@@ -1247,13 +1620,416 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     };
   };
 
+  const clearZoomHold = useCallback(() => {
+    if (zoomHoldTimeoutRef.current !== null) {
+      window.clearTimeout(zoomHoldTimeoutRef.current);
+      zoomHoldTimeoutRef.current = null;
+    }
+
+    if (zoomHoldIntervalRef.current !== null) {
+      window.clearInterval(zoomHoldIntervalRef.current);
+      zoomHoldIntervalRef.current = null;
+    }
+  }, []);
+
+  const rectIntersectsObject = (rect: SelectionRect, object: BoardObject) => {
+    const objectRight = object.x + object.width;
+    const objectBottom = object.y + object.height;
+    const rectRight = rect.x + rect.width;
+    const rectBottom = rect.y + rect.height;
+
+    return !(objectRight < rect.x || object.x > rectRight || objectBottom < rect.y || object.y > rectBottom);
+  };
+
+  const flipSelectionObjects = (axis: "horizontal" | "vertical", rect: SelectionRect) => {
+    const objects = Object.values(boardObjects).filter(
+      (object) => rectIntersectsObject(rect, object) || object.id === activeObjectId,
+    );
+    for (const object of objects) {
+      const nextObject: BoardObject =
+        axis === "horizontal"
+          ? {
+              ...object,
+              x: Math.floor(rect.x + rect.width - (object.x - rect.x) - object.width),
+              flipX: !object.flipX,
+            }
+          : {
+              ...object,
+              y: Math.floor(rect.y + rect.height - (object.y - rect.y) - object.height),
+              flipY: !object.flipY,
+            };
+
+      upsertBoardObject(nextObject, true);
+    }
+  };
+
+  const flipSelectionPixels = (axis: "horizontal" | "vertical") => {
+    const rect = selectionRect;
+    const canvas = canvasRef.current;
+    if (!rect || !canvas) {
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+
+    const beforeSnapshot = getCanvasSnapshot();
+    const imageData = ctx.getImageData(rect.x, rect.y, rect.width, rect.height);
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = rect.width;
+    tempCanvas.height = rect.height;
+    const tempCtx = tempCanvas.getContext("2d");
+    if (!tempCtx) {
+      return;
+    }
+
+    tempCtx.putImageData(imageData, 0, 0);
+
+    ctx.save();
+    ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
+    if (axis === "horizontal") {
+      ctx.translate(rect.x + rect.width, rect.y);
+      ctx.scale(-1, 1);
+    } else {
+      ctx.translate(rect.x, rect.y + rect.height);
+      ctx.scale(1, -1);
+    }
+    ctx.drawImage(tempCanvas, 0, 0);
+    ctx.restore();
+
+    flipSelectionObjects(axis, rect);
+    commitCanvasSnapshot();
+    pushHistoryEntry({
+      before: beforeSnapshot,
+      after: getCanvasSnapshot(),
+    });
+  };
+
+  const getSelectionTransformBounds = (
+    center: Point,
+    width: number,
+    height: number,
+    angle: number,
+  ): SelectionRect => {
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+    const corners = [
+      { x: -halfWidth, y: -halfHeight },
+      { x: halfWidth, y: -halfHeight },
+      { x: halfWidth, y: halfHeight },
+      { x: -halfWidth, y: halfHeight },
+    ].map((corner) => ({
+      x: center.x + corner.x * Math.cos(angle) - corner.y * Math.sin(angle),
+      y: center.y + corner.x * Math.sin(angle) + corner.y * Math.cos(angle),
+    }));
+
+    const minX = Math.min(...corners.map((corner) => corner.x));
+    const maxX = Math.max(...corners.map((corner) => corner.x));
+    const minY = Math.min(...corners.map((corner) => corner.y));
+    const maxY = Math.max(...corners.map((corner) => corner.y));
+
+    return {
+      x: Math.floor(minX),
+      y: Math.floor(minY),
+      width: Math.max(1, Math.ceil(maxX - minX)),
+      height: Math.max(1, Math.ceil(maxY - minY)),
+    };
+  };
+
+  const beginSelectionTransform = (
+    mode: SelectionTransformMode,
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const rect = selectionRect;
+    const canvas = canvasRef.current;
+    if (!rect || !canvas) {
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    const point = getCanvasPoint(event);
+    if (!ctx || !point) {
+      return;
+    }
+
+    const center = {
+      x: rect.x + rect.width / 2,
+      y: rect.y + rect.height / 2,
+    };
+    const startDistance = Math.max(
+      8,
+      Math.hypot(point.x - center.x, point.y - center.y),
+    );
+    const startAngle = Math.atan2(point.y - center.y, point.x - center.x);
+
+    const selectionImage = ctx.getImageData(rect.x, rect.y, rect.width, rect.height);
+    const fullImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const baseData = new Uint8ClampedArray(fullImage.data);
+    for (let y = rect.y; y < rect.y + rect.height; y += 1) {
+      for (let x = rect.x; x < rect.x + rect.width; x += 1) {
+        const index = (y * canvas.width + x) * 4;
+        baseData[index] = 0;
+        baseData[index + 1] = 0;
+        baseData[index + 2] = 0;
+        baseData[index + 3] = 0;
+      }
+    }
+
+    const selectionCanvas = document.createElement("canvas");
+    selectionCanvas.width = rect.width;
+    selectionCanvas.height = rect.height;
+    const selectionCtx = selectionCanvas.getContext("2d");
+    if (!selectionCtx) {
+      return;
+    }
+    selectionCtx.putImageData(selectionImage, 0, 0);
+
+    const affectedObjects = Object.values(boardObjects).filter(
+      (object) => rectIntersectsObject(rect, object) || object.id === activeObjectId,
+    );
+
+    selectionTransformSessionRef.current = {
+      mode,
+      startRect: rect,
+      startPoint: point,
+      center,
+      startDistance,
+      startAngle,
+      baseImage: new ImageData(baseData, canvas.width, canvas.height),
+      selectionCanvas,
+      beforeSnapshot: getCanvasSnapshot(),
+      affectedObjects,
+    };
+
+    setSelectionPreviewRotation(selectionRotation);
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const updateSelectionTransform = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const session = selectionTransformSessionRef.current;
+    const canvas = canvasRef.current;
+    if (!session || !canvas) {
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    const point = getCanvasPoint(event);
+    if (!ctx || !point) {
+      return;
+    }
+
+    const angleDelta =
+      session.mode === "rotate"
+        ? Math.atan2(point.y - session.center.y, point.x - session.center.x) - session.startAngle
+        : 0;
+
+    const scaleFactor =
+      session.mode === "resize"
+        ? clamp(
+            Math.hypot(point.x - session.center.x, point.y - session.center.y) /
+              Math.max(1, session.startDistance),
+            0.1,
+            8,
+          )
+        : 1;
+
+    ctx.putImageData(session.baseImage, 0, 0);
+    ctx.save();
+    ctx.translate(session.center.x, session.center.y);
+    ctx.rotate(angleDelta);
+    ctx.scale(scaleFactor, scaleFactor);
+    ctx.drawImage(
+      session.selectionCanvas,
+      -session.startRect.width / 2,
+      -session.startRect.height / 2,
+      session.startRect.width,
+      session.startRect.height,
+    );
+    ctx.restore();
+
+    const nextRect =
+      session.mode === "rotate"
+        ? session.startRect
+        : getSelectionTransformBounds(
+            session.center,
+            session.startRect.width * scaleFactor,
+            session.startRect.height * scaleFactor,
+            angleDelta,
+          );
+    setSelectionPreviewRect(nextRect);
+    const nextRotation = (selectionRotation + (angleDelta * 180) / Math.PI + 3600) % 360;
+    setSelectionPreviewRotation(nextRotation);
+
+    const angleDeg = (angleDelta * 180) / Math.PI;
+    const transformedObjects: BoardObject[] = [];
+    for (const startObject of session.affectedObjects) {
+      const objectCenterX = startObject.x + startObject.width / 2;
+      const objectCenterY = startObject.y + startObject.height / 2;
+      const offsetX = objectCenterX - session.center.x;
+      const offsetY = objectCenterY - session.center.y;
+
+      const scaledOffsetX = offsetX * scaleFactor;
+      const scaledOffsetY = offsetY * scaleFactor;
+
+      const rotatedCenterX =
+        session.center.x + scaledOffsetX * Math.cos(angleDelta) - scaledOffsetY * Math.sin(angleDelta);
+      const rotatedCenterY =
+        session.center.y + scaledOffsetX * Math.sin(angleDelta) + scaledOffsetY * Math.cos(angleDelta);
+
+      const nextWidth = clamp(Math.floor(startObject.width * scaleFactor), 40, 1400);
+      const nextHeight = clamp(Math.floor(startObject.height * scaleFactor), 24, 1200);
+
+      const nextObject: BoardObject = {
+        ...startObject,
+        x: Math.floor(rotatedCenterX - nextWidth / 2),
+        y: Math.floor(rotatedCenterY - nextHeight / 2),
+        width: nextWidth,
+        height: nextHeight,
+        rotation: (startObject.rotation + angleDeg + 3600) % 360,
+      };
+
+      upsertBoardObject(nextObject, false);
+      transformedObjects.push(nextObject);
+    }
+
+    emitSelectionMovePreview();
+
+    const now = Date.now();
+    if (now - lastObjectDragEmitRef.current >= 24) {
+      for (const transformedObject of transformedObjects) {
+        socketRef.current?.emit("upsert-object", transformedObject);
+      }
+      lastObjectDragEmitRef.current = now;
+    }
+  };
+
+  const finishSelectionTransform = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const session = selectionTransformSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+
+    const finalRect =
+      session.mode === "rotate" ? session.startRect : (selectionPreviewRect ?? session.startRect);
+    setSelectionRect(finalRect);
+    setSelectionPreviewRect(finalRect);
+    setSelectionRotation(selectionPreviewRotation ?? selectionRotation);
+    setSelectionPreviewRotation(null);
+
+    for (const startObject of session.affectedObjects) {
+      const latestObject = boardObjects[startObject.id];
+      if (latestObject) {
+        upsertBoardObject(latestObject, true);
+      }
+    }
+
+    commitCanvasSnapshot();
+    pushHistoryEntry({
+      before: session.beforeSnapshot,
+      after: getCanvasSnapshot(),
+    });
+
+    selectionTransformSessionRef.current = null;
+  };
+
+  const startSelectionDragFromHandle = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const rect = selectionRect;
+    const canvas = canvasRef.current;
+    const point = getCanvasPoint(event);
+    if (!rect || !canvas || !point) {
+      return;
+    }
+
+    pointerIdRef.current = event.pointerId;
+    if (beginSelectionMove(canvas, point, rect)) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  };
+
+  const updateSelectionDragFromHandle = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!movingRef.current || pointerIdRef.current !== event.pointerId || !selectionRect || !moveOffsetRef.current) {
+      return;
+    }
+
+    const point = getCanvasPoint(event);
+    const canvas = canvasRef.current;
+    if (!point || !canvas) {
+      return;
+    }
+
+    const maxX = canvas.width - selectionRect.width;
+    const maxY = canvas.height - selectionRect.height;
+    const nextX = clamp(Math.floor(point.x - moveOffsetRef.current.x), 0, Math.max(0, maxX));
+    const nextY = clamp(Math.floor(point.y - moveOffsetRef.current.y), 0, Math.max(0, maxY));
+    const nextRect = {
+      ...selectionRect,
+      x: nextX,
+      y: nextY,
+    };
+    setSelectionPreviewRect(nextRect);
+
+    const ctx = canvas.getContext("2d");
+    if (ctx && movingBaseImageRef.current && movingSelectionImageRef.current) {
+      ctx.putImageData(movingBaseImageRef.current, 0, 0);
+      ctx.putImageData(movingSelectionImageRef.current, nextRect.x, nextRect.y);
+      emitSelectionMovePreview();
+    }
+  };
+
+  const finishSelectionDragFromHandle = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (pointerIdRef.current !== event.pointerId) {
+      return;
+    }
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+
+    if (movingRef.current) {
+      movingRef.current = false;
+      const target = selectionPreviewRect;
+      if (target) {
+        setSelectionRect(target);
+        if (selectionPreviewRotation !== null) {
+          setSelectionRotation(selectionPreviewRotation);
+          setSelectionPreviewRotation(null);
+        }
+        commitCanvasSnapshot();
+        pushHistoryEntry({
+          before: selectionMoveStartSnapshotRef.current ?? "",
+          after: getCanvasSnapshot(),
+        });
+      }
+
+      selectionMoveStartSnapshotRef.current = null;
+      movingBaseImageRef.current = null;
+      movingSelectionImageRef.current = null;
+    }
+
+    pointerIdRef.current = null;
+    moveOffsetRef.current = null;
+  };
+
   const onObjectPointerDown = (event: React.PointerEvent<HTMLDivElement>, object: BoardObject) => {
     event.stopPropagation();
 
     setActiveObjectId(object.id);
 
     if (editingObjectId === object.id) {
-      return;
+      if (mode === "drag" || mode === "select") {
+        setEditingObjectId(null);
+      } else {
+        return;
+      }
     }
 
     const canDragInCurrentMode =
@@ -1762,6 +2538,33 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     };
   }, []);
 
+  useEffect(() => () => {
+    clearZoomHold();
+  }, [clearZoomHold]);
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (!shapeMenuOpen) {
+        return;
+      }
+
+      const container = shapeMenuContainerRef.current;
+      const target = event.target as Node | null;
+      if (!container || !target) {
+        return;
+      }
+
+      if (!container.contains(target)) {
+        setShapeMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [shapeMenuOpen]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -1806,8 +2609,38 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
           return;
         }
 
+        if (lowerKey === "b") {
+          setMode("bucket");
+          event.preventDefault();
+          return;
+        }
+
         if (lowerKey === "p") {
           setMode("picker");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "t") {
+          setMode("text");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "n") {
+          setMode("sticky");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "c") {
+          setMode("shape");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "g") {
+          setMode("zoom");
           event.preventDefault();
           return;
         }
@@ -1863,6 +2696,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       ctx.clearRect(selectionRect.x, selectionRect.y, selectionRect.width, selectionRect.height);
       setSelectionRect(null);
       setSelectionPreviewRect(null);
+      setSelectionRotation(0);
+      setSelectionPreviewRotation(null);
       commitCanvasSnapshot();
       pushHistoryEntry({
         before: beforeSnapshot,
@@ -1887,10 +2722,71 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   ]);
 
   const displayedSelection = selectionPreviewRect ?? selectionRect;
+  const displayedSelectionRotation = selectionPreviewRotation ?? selectionRotation;
+  const shapeOptions: Array<{ value: ShapeType; label: string }> = [
+    { value: "rectangle", label: "Rectangle" },
+    { value: "ellipse", label: "Ellipse" },
+    { value: "heart", label: "Heart" },
+    { value: "line", label: "Line" },
+    { value: "star", label: "Star" },
+    { value: "star-of-david", label: "Star of David" },
+    { value: "northern-star", label: "Northern Star" },
+    { value: "arrow", label: "Arrow" },
+    { value: "double-arrow", label: "Double Arrow" },
+  ];
+  const activeShapeLabel = shapeOptions.find((option) => option.value === activeShape)?.label ?? "Shape";
+
+  const renderShapeOutlineIcon = (shape: ShapeType) => {
+    const baseProps = {
+      width: 18,
+      height: 18,
+      viewBox: "0 0 24 24",
+      className: "shrink-0",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: 1.8,
+      strokeLinecap: "round" as const,
+      strokeLinejoin: "round" as const,
+    };
+
+    if (shape === "rectangle") {
+      return <svg {...baseProps}><rect x="4" y="5" width="16" height="14" /></svg>;
+    }
+
+    if (shape === "ellipse") {
+      return <svg {...baseProps}><ellipse cx="12" cy="12" rx="8" ry="6.5" /></svg>;
+    }
+
+    if (shape === "line") {
+      return <svg {...baseProps}><line x1="4" y1="18" x2="20" y2="6" /></svg>;
+    }
+
+    if (shape === "star") {
+      return <svg {...baseProps}><polygon points="12,2.5 14.8,8.5 21.5,9.2 16.4,13.6 18,20.8 12,16.8 6,20.8 7.6,13.6 2.5,9.2 9.2,8.5" /></svg>;
+    }
+
+    if (shape === "star-of-david") {
+      return <svg {...baseProps}><polygon points="12,3 19,15 5,15" /><polygon points="12,21 19,9 5,9" /></svg>;
+    }
+
+    if (shape === "northern-star") {
+      return <svg {...baseProps}><polygon points="12,2 14.5,8.8 22,12 14.5,15.2 12,22 9.5,15.2 2,12 9.5,8.8" /></svg>;
+    }
+
+    if (shape === "arrow") {
+      return <svg {...baseProps}><polygon points="3,9 14,9 14,5 21,12 14,19 14,15 3,15" /></svg>;
+    }
+
+    if (shape === "heart") {
+      return <svg {...baseProps}><path d="M12 21 C4 15,3 10,6.5 7.5 C8.7 5.9,11 6.7,12 8.6 C13 6.7,15.3 5.9,17.5 7.5 C21 10,20 15,12 21 Z" /></svg>;
+    }
+
+    return <svg {...baseProps}><polygon points="2,12 7,7 7,10 17,10 17,7 22,12 17,17 17,14 7,14 7,17" /></svg>;
+  };
 
   return (
     <div className="flex min-h-screen w-full flex-col bg-zinc-100 text-zinc-900">
-      <header className="border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-6">
+      <header className="relative z-50 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-6">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold tracking-tight">CollBrush</h1>
@@ -1937,6 +2833,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <button
               type="button"
               onClick={() => setMode("bucket")}
+              title="Bucket (B)"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "bucket" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
@@ -1975,7 +2872,18 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             </button>
             <button
               type="button"
+              onClick={() => setMode("zoom")}
+              title="Magnifier (G) · LMB in / RMB out · hold for continuous zoom"
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                mode === "zoom" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
+              }`}
+            >
+              🔍 Zoom
+            </button>
+            <button
+              type="button"
               onClick={() => setMode("text")}
+              title="Text (T)"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "text" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
@@ -1985,12 +2893,52 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <button
               type="button"
               onClick={() => setMode("sticky")}
+              title="Sticky (N)"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "sticky" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
             >
               🗒️ Sticky
             </button>
+            <div ref={shapeMenuContainerRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setShapeMenuOpen((previous) => !previous)}
+                title="Shapes (C)"
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                  mode === "shape" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
+                }`}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  {renderShapeOutlineIcon(activeShape)}
+                  <span>{activeShapeLabel}</span>
+                </span>
+              </button>
+              {shapeMenuOpen ? (
+                <div
+                  ref={shapeMenuRef}
+                  className="absolute left-0 top-full z-[120] mt-1 max-h-[70vh] w-52 overflow-y-auto overscroll-contain rounded-md border border-zinc-300 bg-white p-1 shadow-lg"
+                >
+                  {shapeOptions.map(({ value: shapeValue, label }) => (
+                    <button
+                      key={shapeValue}
+                      type="button"
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm ${
+                        activeShape === shapeValue ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-100"
+                      }`}
+                      onClick={() => {
+                        setActiveShape(shapeValue);
+                        setMode("shape");
+                        setShapeMenuOpen(false);
+                      }}
+                    >
+                      {renderShapeOutlineIcon(shapeValue)}
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
 
             <div className="mx-1 h-6 w-px bg-zinc-300" />
 
@@ -2055,7 +3003,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
           }
 
           .cb-block-spoiler:hover,
-          .cb-reveal-spoilers {
+          .cb-reveal-spoilers.cb-block-spoiler {
             filter: blur(0);
           }
 
@@ -2077,6 +3025,13 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         </div>
 
         <div ref={containerRef} className="relative min-h-[60vh] flex-1 overflow-hidden rounded-xl border border-zinc-300 bg-white shadow-sm">
+          <div
+            className="absolute inset-0"
+            style={{
+              transform: `scale(${zoomLevel})`,
+              transformOrigin: `${zoomOrigin.x}% ${zoomOrigin.y}%`,
+            }}
+          >
           <canvas
             ref={canvasRef}
             className="h-full w-full touch-none"
@@ -2086,6 +3041,12 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             onPointerLeave={stopDrawing}
             onPointerCancel={stopDrawing}
             onPointerEnter={emitCursorOnEnter}
+            onContextMenu={(event) => {
+              if (mode === "zoom") {
+                event.preventDefault();
+                clearZoomHold();
+              }
+            }}
           />
 
           {Object.values(boardObjects).map((object) => (
@@ -2101,7 +3062,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                 height: `${(object.height / canvasSize.height) * 100}%`,
                 minWidth: "60px",
                 minHeight: "40px",
-                transform: `rotate(${object.rotation}deg)`,
+                transform: `rotate(${object.rotation}deg) scale(${object.flipX ? -1 : 1}, ${object.flipY ? -1 : 1})`,
                 transformOrigin: "center center",
               }}
               onPointerDown={(event) => onObjectPointerDown(event, object)}
@@ -2306,15 +3267,83 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
           ))}
 
           {displayedSelection ? (
-            <div
-              className="pointer-events-none absolute border-2 border-dashed border-blue-500 bg-blue-200/20"
-              style={{
-                left: `${(displayedSelection.x / canvasSize.width) * 100}%`,
-                top: `${(displayedSelection.y / canvasSize.height) * 100}%`,
-                width: `${(displayedSelection.width / canvasSize.width) * 100}%`,
-                height: `${(displayedSelection.height / canvasSize.height) * 100}%`,
-              }}
-            />
+            <>
+              <div
+                className="pointer-events-none absolute"
+                style={{
+                  left: `${(displayedSelection.x / canvasSize.width) * 100}%`,
+                  top: `${(displayedSelection.y / canvasSize.height) * 100}%`,
+                  width: `${(displayedSelection.width / canvasSize.width) * 100}%`,
+                  height: `${(displayedSelection.height / canvasSize.height) * 100}%`,
+                  transform: `rotate(${displayedSelectionRotation}deg)`,
+                  transformOrigin: "center center",
+                }}
+              >
+                <div className="pointer-events-none absolute inset-0 border-2 border-dashed border-blue-500 bg-blue-200/20" />
+
+                <button
+                  type="button"
+                  className="pointer-events-auto absolute right-0 top-0 z-30 h-4 w-4 -translate-y-1/2 translate-x-1/2 cursor-alias rounded-sm border border-zinc-700 bg-white text-[10px] leading-none"
+                  onPointerDown={(event) => beginSelectionTransform("rotate", event)}
+                  onPointerMove={updateSelectionTransform}
+                  onPointerUp={finishSelectionTransform}
+                  onPointerCancel={finishSelectionTransform}
+                  aria-label="Rotate selection"
+                  title="Rotate selection"
+                >
+                  ↻
+                </button>
+
+                <button
+                  type="button"
+                  className="pointer-events-auto absolute right-0 top-0 z-30 h-4 w-4 translate-x-1/2 cursor-se-resize rounded-sm border border-zinc-700 bg-white"
+                  style={{ top: "30px" }}
+                  onPointerDown={(event) => beginSelectionTransform("resize", event)}
+                  onPointerMove={updateSelectionTransform}
+                  onPointerUp={finishSelectionTransform}
+                  onPointerCancel={finishSelectionTransform}
+                  aria-label="Resize selection"
+                  title="Resize selection"
+                />
+
+                <button
+                  type="button"
+                  className="pointer-events-auto absolute bottom-0 left-0 z-30 h-4 w-4 translate-y-1/2 -translate-x-1/2 cursor-move rounded-sm border border-zinc-700 bg-white text-[10px] leading-none"
+                  onPointerDown={startSelectionDragFromHandle}
+                  onPointerMove={updateSelectionDragFromHandle}
+                  onPointerUp={finishSelectionDragFromHandle}
+                  onPointerCancel={finishSelectionDragFromHandle}
+                  aria-label="Drag selection"
+                  title="Drag selection"
+                >
+                  ✥
+                </button>
+              </div>
+              <div
+                className="absolute z-30 flex gap-1"
+                style={{
+                  left: `${(displayedSelection.x / canvasSize.width) * 100}%`,
+                  top: `${Math.max(0, ((displayedSelection.y - 32) / canvasSize.height) * 100)}%`,
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => flipSelectionPixels("horizontal")}
+                  className="rounded border border-zinc-400 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 shadow hover:bg-zinc-50"
+                  title="Flip Horizontal"
+                >
+                  ↔ Flip
+                </button>
+                <button
+                  type="button"
+                  onClick={() => flipSelectionPixels("vertical")}
+                  className="rounded border border-zinc-400 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 shadow hover:bg-zinc-50"
+                  title="Flip Vertical"
+                >
+                  ↕ Flip
+                </button>
+              </div>
+            </>
           ) : null}
 
           {objectCreatePreview ? (
@@ -2360,6 +3389,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
               {joinError}
             </div>
           ) : null}
+          </div>
         </div>
       </main>
     </div>

@@ -245,3 +245,189 @@ Date: 2026-03-04
                 - Drawn canvas elements can be dragged in Drag mode without pre-selection.
                 - Hotkeys and hover hints are available for core tools.
                 - Spoiler content correctly reveals on mouse hover.
+
+            [24] Request: Add horizontal/vertical flip buttons for selected areas (including text), add magnifier tool (LMB zoom in / RMB zoom out), add shape picker section with last used shape and drag-to-size outline placement.
+                Changes made:
+                - Added selection toolbar above active selection with `↔ Flip` and `↕ Flip` buttons.
+                - Implemented pixel flip for selected canvas region (horizontal/vertical).
+                - Implemented object flip integration for selected region by mirroring intersecting text/sticky objects and toggling per-object `flipX` / `flipY` state.
+                - Extended board object protocol with `flipX` and `flipY`, and normalized defaults for backwards compatibility.
+                - Added magnifier tool (`🔍 Zoom`) with LMB zoom-in and RMB zoom-out centered around cursor.
+                - Applied zoom transform to board stage and blocked context menu in zoom mode.
+                - Added Shapes section showing last used shape and dropdown chooser (`Rectangle`, `Ellipse`, `Line`).
+                - Added shape outline drawing mode using current color and brush size, with press-and-drag sizing and snapshot commit on release.
+                - Added connected-region drag pickup in Drag mode so drawn pen/fill elements can be selected/moved by clicking them.
+                - Added/kept tool hover hints for requested hotkeys (`Q/S/D/E/P`).
+                Result:
+                - Selected areas now provide flip controls and flipped output includes overlay objects in that area.
+                - Zoom and shapes workflows are available directly from toolbar.
+                - Any drawn region can be grabbed and moved in Drag mode.
+
+        [25] Request: Add more shapes (star, star of David, northern star, arrow, double-pointed arrow), show shape outlines in shape selection UI, add hold-to-zoom behavior with 0.2s delay, and add magnifier hotkey `G`.
+                Changes made:
+                - Extended shape model and drawing engine with:
+                    - Star
+                    - Star of David
+                    - Northern Star
+                    - Arrow
+                    - Double Arrow
+                - Added outline icon previews for every shape option in the shapes dropdown.
+                - Updated shapes button to display current selected shape with its outline icon.
+                - Implemented press-and-hold zoom behavior in magnifier mode:
+                    - Starts continuous zoom after 0.2 seconds hold.
+                    - LMB continuously zooms in.
+                    - RMB continuously zooms out.
+                    - Stops cleanly on release/cancel/unmount.
+                - Added hotkey `G` to switch to magnifier tool.
+                - Updated magnifier tooltip hint to include `G` and hold behavior details.
+                Result:
+                - Shapes palette now includes requested advanced outline shapes with visual previews.
+                - Magnifier supports both click-step zoom and continuous hold zoom with requested delay.
+                - Keyboard shortcut `G` switches to magnifier tool.
+
+        [26] Request: Add hotkeys for text (`T`), sticky notes (`N`), bucket (`B`), and shapes (`C`).
+                Changes made:
+                - Added keyboard shortcuts in tool handler:
+                    - `B` → Bucket
+                    - `T` → Text
+                    - `N` → Sticky
+                    - `C` → Shapes
+                - Updated hover hints/tooltips on corresponding toolbar buttons to show these hotkeys.
+                Result:
+                - Requested tool hotkeys are active and discoverable via button hover hints.
+
+            [27] Request: Allow scrolling of the shape-choice window.
+                Changes made:
+                - Updated shapes dropdown container with max height and vertical overflow scrolling.
+                Result:
+                - Shape-choice menu is now scrollable when options exceed visible area.
+
+            [28] Request: Add scroll-wheel + side-scrollbar support for shape selection window; show shape drawing on other users' screens live while drawing for smooth experience.
+                Changes made:
+                - Enhanced shape dropdown container to always show vertical scrollbar (`overflow-y-scroll`).
+                - Added wheel-handler on shape menu so mouse wheel scrolls the shape list reliably and prevents page/canvas scroll conflicts.
+                - Wired shape preview drawing path to emit throttled realtime preview frames while dragging shape size.
+                - Reused collaborative preview broadcast channel so other users see in-progress shape outlines before mouse release.
+                Result:
+                - Shape chooser now scrolls with both mouse wheel and visible side scrollbar.
+                - Shape placement appears smoothly in real-time on other connected clients during drag, not only after release.
+
+            [29] Request: Fix scrolling not working in shape selection window; add heart shape.
+                Changes made:
+                - Reworked shape dropdown scrolling to use native `overflow-y-auto` behavior.
+                - Reduced shape menu max height to force predictable overflow and enable reliable wheel/scrollbar interaction.
+                - Added new `Heart` shape to shape type model.
+                - Implemented heart outline drawing logic in shape renderer.
+                - Added heart option to shape dropdown and heart outline icon preview.
+                Result:
+                - Shape selection window now scrolls reliably with mouse wheel and side scrollbar.
+                - Heart shape is available in the shapes tool and renders as outline like other shapes.
+
+        [30] Request: Fix Northern Star outline mismatch with icon in shape selection window; add rotate and resize options to every dragged/selected object.
+                Changes made:
+                - Updated Northern Star drawing geometry to match the icon polygon coordinates exactly.
+                - Added selection-level transform controls alongside flip controls:
+                    - Rotate (`↻ Rotate`, 90°)
+                    - Resize up (`＋ Size`)
+                    - Resize down (`－ Size`)
+                - Implemented selected-region pixel transforms for rotate and resize.
+                - Applied matching transforms to intersecting text/sticky objects inside selected region (position, rotation, size where applicable).
+                - Kept collaborative sync/history behavior by committing transform results via snapshot broadcast and object upserts.
+                Result:
+                - Northern Star outline now visually matches its icon in the shapes UI.
+                - Selected content has rotate/resize options in addition to flip, and text/sticky objects are transformed together with the selected region.
+
+            [31] Request: Close shape selection window when clicking outside; fix selection tool choosing only a small dot instead of area.
+                Changes made:
+                - Added outside-click detection for the shape menu using a container ref and global pointerdown listener.
+                - Shape menu now closes when pointer interaction happens outside its button/dropdown area.
+                - Fixed selection tool drag behavior by scoping shape-session preview handling to `shape` mode only.
+                - Prevented stale shape-session branch from hijacking pointer move updates when using `select` mode.
+                Result:
+                - Shape selection dropdown closes on outside click.
+                - Select tool correctly updates selection rectangle area during drag instead of staying as a small dot.
+
+        [32] Request: Make selected-area resize/rotate work smoothly like Microsoft Paint and make selected area flip together with selected object.
+                Changes made:
+                - Replaced step-based selection rotate/resize actions with pointer-drag transform sessions for smooth continuous changes.
+                - Added live transform preview for selected pixels while dragging rotate/resize controls.
+                - Added live transform updates for intersecting/selected text-sticky objects during selection transforms.
+                - Updated selection controls:
+                    - `↻ Rotate` now supports smooth drag angle changes.
+                    - `↘ Resize` now supports smooth drag scaling.
+                - Kept flip controls and extended flip object targeting to include currently selected object (`activeObjectId`) in addition to intersecting objects.
+                - Updated Northern Star outline geometry to match icon points more precisely.
+                Result:
+                - Selection rotate/resize now behaves smoothly during drag rather than discrete jump steps.
+                - Flipping selected area now flips the selected object together with the area.
+
+        [33] Request: Add rotate and resize buttons in top-right corner of selection and make behavior more like text block handles.
+                Changes made:
+                - Moved selection rotate/resize controls from top action strip into handle-style buttons at the selection’s top-right corner.
+                - Added compact corner controls matching object handle interaction pattern:
+                    - rotate handle (`↻`, drag for smooth angle)
+                    - resize handle (corner drag, smooth scaling)
+                - Kept existing smooth transform session logic and pointer-capture drag behavior for Paint-like feel.
+                Result:
+                - Selection transform controls now work visually and interactively like text/sticky object handles.
+
+            [34] Request: Add more padding between selection resize and rotate handles; make selection outline rotate together with selected objects.
+                Changes made:
+                - Increased spacing between top-right selection rotate and resize controls by moving resize handle farther below rotate handle.
+                - Added selection rotation state tracking (`selectionRotation` / `selectionPreviewRotation`).
+                - Updated selection overlay rendering to apply rotation transform to the selection outline and corner handles.
+                - Wired smooth selection transform session updates to drive rotating outline preview in real time.
+                - Persisted final selection rotation after transform completion and reset it appropriately on clear/delete/deselect flows.
+                Result:
+                - Rotate/resize handles have clearer spacing.
+                - Selection outline now rotates together with selected content, matching object-style transform behavior.
+
+            [35] Request: Fix bug where rotating selected shape changes size; make other users see rotation/resizing in real time.
+                Changes made:
+                - Fixed rotate transform session so selection bounds remain stable during rotate mode (no unintended size/bounds recomputation while rotating).
+                - Kept resize mode using dynamic bounds updates, but rotate mode now preserves original selection rect.
+                - Added realtime preview emission during selection transform updates so canvas transforms stream to other users while dragging.
+                - Added throttled realtime `upsert-object` broadcasting during transform updates so text/sticky object rotate/resize changes are visible to others live.
+                - Final selection rect commit logic now respects transform mode to avoid rotate-mode rect drift.
+                Result:
+                - Rotation no longer causes accidental scaling of selected content.
+                - Other collaborators now see in-progress selection rotation/resize changes in real time.
+
+            [36] Request: Ensure heart is added to shapes tool and make dropdown window longer.
+                Changes made:
+                - Moved `Heart` shape option near top of shapes list for immediate visibility.
+                - Increased shape dropdown max height so it extends further down over the board area.
+                Result:
+                - Heart is clearly visible in the shape selector.
+                - Shape dropdown appears longer and drops lower on the board.
+
+            [37] Request: Improve heart shape, restore scrolling in shape dropdown, and show more of dropdown window.
+                Changes made:
+                - Reworked heart outline rendering to a smoother parametric heart curve for better shape quality.
+                - Set shape dropdown to fixed taller height (`h-64`) to display more options at once.
+                - Switched dropdown overflow to always show vertical scrollbar (`overflow-y-scroll`) so scroll interaction is clearly available.
+                Result:
+                - Heart outline looks more natural.
+                - Shape selection dropdown is taller and scrollbar-based scrolling is visibly available again.
+
+        [38] Request: Fix missing shapes in selection window and make dropdown appear above board for better visibility.
+                Changes made:
+                - Removed fixed dropdown height constraint and switched to `max-h-[70vh]` so all shape entries can be reached reliably.
+                - Kept vertical scrolling enabled with `overflow-y-auto` for long lists.
+                - Raised stacking context:
+                    - Header set to `relative z-50`.
+                    - Shape dropdown set to `z-[120]` with stronger shadow.
+                Result:
+                - Shape list no longer appears cut off.
+                - Dropdown clearly overlays the board and is easier to see/interact with.
+
+            [39] Request: Place drag button in bottom-left corner of selected area; fix drag tool not working with selected area and text/sticky on first button press.
+                Changes made:
+                - Added selection drag handle (`✥`) at the bottom-left corner of selected area.
+                - Implemented handle-driven selection drag start/move/end flow with live preview and snapshot commit.
+                - Updated rotated selection overlay container to `pointer-events-none` so it no longer blocks first-click interactions on canvas.
+                - Set transform handles (rotate/resize/drag) to `pointer-events-auto` so controls remain interactive.
+                - Fixed object drag first-press behavior by exiting edit mode immediately when drag/select mode is active on the same object.
+                Result:
+                - Selected area can be dragged from bottom-left corner handle.
+                - Drag tool interactions on selected regions and text/sticky objects work correctly on first press.
