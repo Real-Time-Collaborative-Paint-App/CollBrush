@@ -39,6 +39,7 @@ export interface TextObject {
   y: number;
   width: number;
   height: number;
+  rotation: number;
   content: string;
   style: TextStyle;
 }
@@ -50,6 +51,7 @@ export interface StickyObject {
   y: number;
   width: number;
   height: number;
+  rotation: number;
   content: string;
   style: TextStyle;
 }

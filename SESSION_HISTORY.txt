@@ -152,3 +152,96 @@ Date: 2026-03-04
         - Extended sticky object schema with text style fields for collaborative style sync.
         Result:
         - Formatting controls are now object-specific and context-aware, matching requested workflow.
+
+    [17] Request: Add rotate option next to resize for text/stickynotes; create text/sticky by press-hold-drag to set initial size; if text is selected change only selected fragment style (font/size/color), otherwise apply to whole block.
+        Changes made:
+        - Added `rotation` field to text and sticky object schema and normalization defaults.
+        - Implemented rotate handle button beside resize handle with live collaborative rotation sync.
+        - Reworked text/sticky placement flow to press-hold-drag-release, including a visible placement preview rectangle.
+        - Replaced textarea editing with contenteditable editing for both text and sticky objects.
+        - Added selected-text style application (font family, size, color) during editing; falls back to whole-object style update when no text range is selected.
+        - Preserved existing per-object formatting toolbar and collaboration broadcasting.
+        Result:
+        - Text/sticky blocks now support drag-sized creation, per-object rotation, and partial text styling behavior as requested.
+
+    [18] Request: Add drag tool, bind Esc to drag tool, drag text/sticky/selected elements only with drag tool, reveal spoiler on hover, and fix font + selected-text property bugs.
+        Changes made:
+        - Added new ✋ Drag tool to toolbar and extended tool mode handling.
+        - Added Esc keyboard shortcut to switch active tool to Drag instantly.
+        - Reworked canvas interaction so moving selected pixel regions works in Drag mode.
+        - Restricted text/sticky object dragging to Drag mode only.
+        - Added spoiler hover reveal behavior for text and sticky content (hidden by default, revealed on hover).
+        - Fixed text toolbar interaction bug by removing blocking pointer default on toolbar container.
+        - Added selection range preservation for contenteditable editing so font/size/color changes can apply to selected text even when toolbar controls take focus.
+        - Added blur guard to keep edit session active when interacting with toolbar controls.
+        Result:
+        - Drag behavior now follows dedicated tool semantics, Esc selects drag mode, spoilers reveal on hover, and font/selected-text styling works reliably.
+
+    [19] Request: Deselect selected area on outside click; fix spoiler causing full block black on other users; apply bold/italic/strikethrough/spoiler to selected text only (fallback to whole block when no selection).
+        Changes made:
+        - Added outside-click deselection for selected canvas regions (except while creating new selection).
+        - Updated Drag tool behavior so clicking outside selected area clears selection.
+        - Extended selected-text styling engine to support boolean styles: bold, italic, strikethrough, spoiler.
+        - Rewired toolbar buttons (B/I/S/Spoiler) to selection-aware toggles with whole-object fallback only when no text selection exists.
+        - Added inline spoiler markup class for selected fragments and hover-reveal CSS.
+        - Updated object-level spoiler background handling to avoid forced black background when hovered.
+        Result:
+        - Selected area now deselects correctly on outside click.
+        - Spoiler no longer unintentionally blackens full text blocks for remote users when applied to selection.
+        - B/I/S/Spoiler now behave like font/size/color: selected text first, whole block only when no selection.
+
+    [20] Request: Make strikethrough not affect text typed after use; reveal spoiler on hover with any tool/plain cursor; use heavy blur for spoiler instead of black fill.
+        Changes made:
+        - Updated selected-text styling flow to collapse caret after applying inline style spans, preventing style carryover to subsequently typed text.
+        - Reworked spoiler rendering from black concealment to blur-based concealment.
+        - Added block-level spoiler blur class (`cb-block-spoiler`) with hover reveal.
+        - Updated inline selected spoiler class (`cb-inline-spoiler`) to heavy blur with hover reveal.
+        - Kept hover behavior tool-agnostic by using hover-based reveal styles on rendered objects.
+        Result:
+        - New text typed after applying strikethrough to a selected fragment no longer inherits strikethrough unintentionally.
+        - Spoiler content is now obscured by heavy blur and revealed on hover regardless of current tool.
+
+    [21] Request: Spoiler should affect only selected text (not whole block); allow dragging selected items with both Select and Drag tools; fix text deletion bug during redaction; make redaction smoother.
+        Changes made:
+        - Updated Select tool behavior so clicking inside existing selection starts move (same as Drag), while Drag still supports moving selected area.
+        - Enabled object drag interactions in both Select and Drag tools.
+        - Made spoiler toggle strictly selection-based (no whole-object fallback for spoiler).
+        - Refactored selected-text style application to wrap only extracted selection content and reinsert safely (prevents selection-redaction text loss).
+        - Applied spoiler wrapping to text nodes within the selected fragment for more stable redaction behavior.
+        - Preserved caret repositioning after style application for smoother continued typing/editing.
+        Result:
+        - Spoiler now applies to selected fragments only.
+        - Selected content can be moved with either Select or Drag tool.
+        - Redaction no longer deletes text and behaves more smoothly during editing.
+
+        [22] Request: Allow dragging text/sticky with corresponding tool by pressing empty part of block/node; fix bug where text hides during redaction.
+                Changes made:
+                - Expanded object drag activation to work when matching object tool is active:
+                    - Text tool can drag text blocks.
+                    - Sticky tool can drag sticky notes.
+                    - Existing Select/Drag tool dragging remains supported.
+                - Improved inline redaction rendering by adding explicit spoiler data/style markers on wrapped selected text spans.
+                - Switched spoiler style rules to global scope so dynamically inserted redaction spans are reliably styled.
+                - Tuned spoiler blur intensity and reveal transition to avoid text disappearing while still redacted.
+                Result:
+                - Text/sticky objects can be moved with their corresponding tools.
+                - Redacted text remains visibly blurred instead of appearing fully hidden.
+
+        [23] Request: Add corner drag button for text/sticky blocks; fix spoiler reveal-on-hover bug; allow dragging any element including pen-drawn ones; add tool hotkeys (Q/S/D/E/P) and hover hints.
+                Changes made:
+                - Added a dedicated drag handle button in object corner that starts drag behavior regardless of selected tool.
+                - Added drag-tool support for pen/fill drawings by detecting connected opaque canvas region under cursor and moving it as a selected area.
+                - Added hotkeys:
+                    - `Q` → Pen
+                    - `S` → Select
+                    - `D` → Drag
+                    - `E` → Eraser
+                    - `P` → Picker
+                - Added hover tooltips with hotkey hints on the corresponding tool buttons.
+                - Fixed spoiler hover reveal by removing inline filter overrides on dynamic spoiler spans and relying on global hover-reveal classes.
+                - Aligned sticky edit rendering so spoiler state does not hide text while editing.
+                Result:
+                - Blocks/notes can be dragged from their corner drag button.
+                - Drawn canvas elements can be dragged in Drag mode without pre-selection.
+                - Hotkeys and hover hints are available for core tools.
+                - Spoiler content correctly reveals on mouse hover.

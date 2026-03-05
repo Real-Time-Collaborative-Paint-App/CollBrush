@@ -24,7 +24,7 @@ type CollaborativeBoardProps = {
   nickname: string;
 };
 
-type ToolMode = DrawMode | "bucket" | "select" | "picker" | "text" | "sticky";
+type ToolMode = DrawMode | "bucket" | "select" | "drag" | "picker" | "text" | "sticky";
 
 type SelectionRect = {
   x: number;
@@ -44,6 +44,19 @@ type ResizeSession = {
   startHeight: number;
 };
 
+type RotateSession = {
+  center: Point;
+  startPointerAngle: number;
+  startRotation: number;
+};
+
+type CreateObjectSession = {
+  pointerId: number;
+  mode: "text" | "sticky";
+  startPoint: Point;
+  currentPoint: Point;
+};
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
@@ -57,12 +70,35 @@ const DEFAULT_TEXT_STYLE: TextStyle = {
   spoiler: false,
 };
 
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const looksLikeHtml = (value: string) => /<\/?[a-z][\s\S]*>/i.test(value);
+
+const toMarkupContent = (value: string) => {
+  if (!value) {
+    return "";
+  }
+
+  if (looksLikeHtml(value)) {
+    return value;
+  }
+
+  return escapeHtml(value).replaceAll("\n", "<br>");
+};
+
 const normalizeBoardObject = (object: BoardObject): BoardObject => {
   if (object.type === "text") {
     return {
       ...object,
       width: object.width || 260,
       height: object.height || 120,
+      rotation: object.rotation ?? 0,
       style: {
         ...DEFAULT_TEXT_STYLE,
         ...object.style,
@@ -74,6 +110,7 @@ const normalizeBoardObject = (object: BoardObject): BoardObject => {
     ...object,
     width: object.width || 220,
     height: object.height || 160,
+    rotation: object.rotation ?? 0,
     style: {
       ...DEFAULT_TEXT_STYLE,
       ...(object.style ?? {}),
@@ -244,6 +281,12 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const lastObjectDragEmitRef = useRef(0);
   const resizingObjectIdRef = useRef<string | null>(null);
   const objectResizeSessionRef = useRef<ResizeSession | null>(null);
+  const rotatingObjectIdRef = useRef<string | null>(null);
+  const objectRotateSessionRef = useRef<RotateSession | null>(null);
+  const objectCreateSessionRef = useRef<CreateObjectSession | null>(null);
+  const editingElementRef = useRef<HTMLDivElement | null>(null);
+  const activeToolbarRef = useRef<HTMLDivElement | null>(null);
+  const selectedTextRangeRef = useRef<Range | null>(null);
 
   const isDrawingRef = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
@@ -267,7 +310,8 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [boardObjects, setBoardObjects] = useState<Record<string, BoardObject>>({});
   const [activeObjectId, setActiveObjectId] = useState<string | null>(null);
   const [editingObjectId, setEditingObjectId] = useState<string | null>(null);
-  const [editingContent, setEditingContent] = useState("");
+  const [objectCreatePreview, setObjectCreatePreview] = useState<SelectionRect | null>(null);
+  const [hoveredObjectId, setHoveredObjectId] = useState<string | null>(null);
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -742,48 +786,30 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       return;
     }
 
+    const clickedInsideSelection = selectionRect ? pointInRect(point, selectionRect) : false;
+    if (selectionRect && !clickedInsideSelection && mode !== "select") {
+      setSelectionRect(null);
+      setSelectionPreviewRect(null);
+      movingRef.current = false;
+      moveOffsetRef.current = null;
+      movingBaseImageRef.current = null;
+      movingSelectionImageRef.current = null;
+      selectionMoveStartSnapshotRef.current = null;
+    }
+
     setActiveObjectId(null);
     setEditingObjectId(null);
 
-    if (mode === "text") {
-      const object: BoardObject = {
-        id: createObjectId(),
-        type: "text",
-        x: Math.floor(point.x),
-        y: Math.floor(point.y),
-        width: 260,
-        height: 120,
-        content: "",
-        style: { ...DEFAULT_TEXT_STYLE },
+    if (mode === "text" || mode === "sticky") {
+      pointerIdRef.current = event.pointerId;
+      canvas.setPointerCapture(event.pointerId);
+      objectCreateSessionRef.current = {
+        pointerId: event.pointerId,
+        mode,
+        startPoint: point,
+        currentPoint: point,
       };
-
-      upsertBoardObject(object, true);
-      setActiveObjectId(object.id);
-      setEditingObjectId(object.id);
-      setEditingContent("");
-      return;
-    }
-
-    if (mode === "sticky") {
-      const object: BoardObject = {
-        id: createObjectId(),
-        type: "sticky",
-        x: Math.floor(point.x),
-        y: Math.floor(point.y),
-        width: 220,
-        height: 160,
-        content: "",
-        style: {
-          ...DEFAULT_TEXT_STYLE,
-          fontSize: 18,
-        },
-      };
-
-      upsertBoardObject(object, true);
-      setActiveObjectId(object.id);
-      setEditingObjectId(object.id);
-      setEditingContent("");
-      setMode("draw");
+      setObjectCreatePreview(normalizeRect(point, point));
       return;
     }
 
@@ -827,44 +853,33 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       return;
     }
 
+    if (mode === "drag") {
+      pointerIdRef.current = event.pointerId;
+      canvas.setPointerCapture(event.pointerId);
+
+      if (selectionRect && clickedInsideSelection && beginSelectionMove(canvas, point, selectionRect)) {
+        return;
+      }
+
+      const connectedRegion = getConnectedOpaqueRegion(canvas, point);
+      if (connectedRegion) {
+        setSelectionRect(connectedRegion);
+        setSelectionPreviewRect(connectedRegion);
+        if (beginSelectionMove(canvas, point, connectedRegion)) {
+          return;
+        }
+      }
+
+      pointerIdRef.current = null;
+      return;
+    }
+
     if (mode === "select") {
       pointerIdRef.current = event.pointerId;
       canvas.setPointerCapture(event.pointerId);
 
-      if (selectionRect && pointInRect(point, selectionRect)) {
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          return;
-        }
-
-        movingRef.current = true;
-        moveOffsetRef.current = {
-          x: point.x - selectionRect.x,
-          y: point.y - selectionRect.y,
-        };
-
-        const fullImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const baseData = new Uint8ClampedArray(fullImage.data);
-        for (let y = selectionRect.y; y < selectionRect.y + selectionRect.height; y += 1) {
-          for (let x = selectionRect.x; x < selectionRect.x + selectionRect.width; x += 1) {
-            const index = (y * canvas.width + x) * 4;
-            baseData[index] = 0;
-            baseData[index + 1] = 0;
-            baseData[index + 2] = 0;
-            baseData[index + 3] = 0;
-          }
-        }
-
-        movingBaseImageRef.current = new ImageData(baseData, canvas.width, canvas.height);
-        movingSelectionImageRef.current = ctx.getImageData(
-          selectionRect.x,
-          selectionRect.y,
-          selectionRect.width,
-          selectionRect.height,
-        );
-
-        selectionMoveStartSnapshotRef.current = canvas.toDataURL("image/png");
-        setSelectionPreviewRect(selectionRect);
+      if (selectionRect && clickedInsideSelection && beginSelectionMove(canvas, point, selectionRect)) {
+        selectingRef.current = false;
         return;
       }
 
@@ -902,7 +917,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       }
     }
 
-    if (mode === "select") {
+    if (mode === "select" || mode === "drag") {
       if (pointerIdRef.current !== event.pointerId) {
         return;
       }
@@ -912,7 +927,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         return;
       }
 
-      if (selectingRef.current && selectionStartRef.current) {
+      if (mode === "select" && selectingRef.current && selectionStartRef.current) {
         const nextRect = normalizeRect(selectionStartRef.current, point);
         setSelectionRect(nextRect);
         setSelectionPreviewRect(nextRect);
@@ -941,6 +956,22 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
         }
       }
 
+      return;
+    }
+
+    const createSession = objectCreateSessionRef.current;
+    if (createSession) {
+      if (pointerIdRef.current !== event.pointerId || createSession.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const point = getCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      createSession.currentPoint = point;
+      setObjectCreatePreview(normalizeRect(createSession.startPoint, point));
       return;
     }
 
@@ -976,7 +1007,60 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   };
 
   const stopDrawing = (event?: React.PointerEvent<HTMLCanvasElement>) => {
-    if (mode === "select") {
+    const createSession = objectCreateSessionRef.current;
+    if (createSession) {
+      const canvas = canvasRef.current;
+      if (event && pointerIdRef.current === event.pointerId) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+
+      const rect = normalizeRect(createSession.startPoint, createSession.currentPoint);
+      const minWidth = createSession.mode === "text" ? 120 : 100;
+      const minHeight = createSession.mode === "text" ? 56 : 72;
+
+      const object: BoardObject =
+        createSession.mode === "text"
+          ? {
+              id: createObjectId(),
+              type: "text",
+              x: Math.floor(rect.x),
+              y: Math.floor(rect.y),
+              width: clamp(rect.width, minWidth, Math.max(minWidth, canvas?.width ?? 1200)),
+              height: clamp(rect.height, minHeight, Math.max(minHeight, canvas?.height ?? 900)),
+              rotation: 0,
+              content: "",
+              style: { ...DEFAULT_TEXT_STYLE },
+            }
+          : {
+              id: createObjectId(),
+              type: "sticky",
+              x: Math.floor(rect.x),
+              y: Math.floor(rect.y),
+              width: clamp(rect.width, minWidth, Math.max(minWidth, canvas?.width ?? 1200)),
+              height: clamp(rect.height, minHeight, Math.max(minHeight, canvas?.height ?? 900)),
+              rotation: 0,
+              content: "",
+              style: {
+                ...DEFAULT_TEXT_STYLE,
+                fontSize: 18,
+              },
+            };
+
+      upsertBoardObject(object, true);
+      setActiveObjectId(object.id);
+      setEditingObjectId(object.id);
+      setObjectCreatePreview(null);
+      objectCreateSessionRef.current = null;
+      pointerIdRef.current = null;
+
+      if (createSession.mode === "sticky") {
+        setMode("draw");
+      }
+
+      return;
+    }
+
+    if (mode === "select" || mode === "drag") {
       if (event && pointerIdRef.current === event.pointerId) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -1063,11 +1147,126 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     });
   };
 
+  const beginSelectionMove = (
+    canvas: HTMLCanvasElement,
+    point: Point,
+    rect: SelectionRect,
+  ) => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return false;
+    }
+
+    movingRef.current = true;
+    moveOffsetRef.current = {
+      x: point.x - rect.x,
+      y: point.y - rect.y,
+    };
+
+    const fullImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const baseData = new Uint8ClampedArray(fullImage.data);
+    for (let y = rect.y; y < rect.y + rect.height; y += 1) {
+      for (let x = rect.x; x < rect.x + rect.width; x += 1) {
+        const index = (y * canvas.width + x) * 4;
+        baseData[index] = 0;
+        baseData[index + 1] = 0;
+        baseData[index + 2] = 0;
+        baseData[index + 3] = 0;
+      }
+    }
+
+    movingBaseImageRef.current = new ImageData(baseData, canvas.width, canvas.height);
+    movingSelectionImageRef.current = ctx.getImageData(rect.x, rect.y, rect.width, rect.height);
+    selectionMoveStartSnapshotRef.current = canvas.toDataURL("image/png");
+    setSelectionPreviewRect(rect);
+    return true;
+  };
+
+  const getConnectedOpaqueRegion = (
+    canvas: HTMLCanvasElement,
+    point: Point,
+  ): SelectionRect | null => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return null;
+    }
+
+    const x = clamp(Math.floor(point.x), 0, canvas.width - 1);
+    const y = clamp(Math.floor(point.y), 0, canvas.height - 1);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    const width = canvas.width;
+    const height = canvas.height;
+
+    const alphaAt = (cx: number, cy: number) => data[(cy * width + cx) * 4 + 3];
+    if (alphaAt(x, y) === 0) {
+      return null;
+    }
+
+    const visited = new Uint8Array(width * height);
+    const stack: number[] = [x, y];
+    let minX = x;
+    let maxX = x;
+    let minY = y;
+    let maxY = y;
+
+    while (stack.length > 0) {
+      const cy = stack.pop() as number;
+      const cx = stack.pop() as number;
+
+      if (cx < 0 || cy < 0 || cx >= width || cy >= height) {
+        continue;
+      }
+
+      const index = cy * width + cx;
+      if (visited[index]) {
+        continue;
+      }
+      visited[index] = 1;
+
+      if (alphaAt(cx, cy) === 0) {
+        continue;
+      }
+
+      minX = Math.min(minX, cx);
+      maxX = Math.max(maxX, cx);
+      minY = Math.min(minY, cy);
+      maxY = Math.max(maxY, cy);
+
+      stack.push(cx + 1, cy);
+      stack.push(cx - 1, cy);
+      stack.push(cx, cy + 1);
+      stack.push(cx, cy - 1);
+    }
+
+    return {
+      x: minX,
+      y: minY,
+      width: Math.max(1, maxX - minX + 1),
+      height: Math.max(1, maxY - minY + 1),
+    };
+  };
+
   const onObjectPointerDown = (event: React.PointerEvent<HTMLDivElement>, object: BoardObject) => {
     event.stopPropagation();
-    event.preventDefault();
 
     setActiveObjectId(object.id);
+
+    if (editingObjectId === object.id) {
+      return;
+    }
+
+    const canDragInCurrentMode =
+      mode === "drag" ||
+      mode === "select" ||
+      (mode === "text" && object.type === "text") ||
+      (mode === "sticky" && object.type === "sticky");
+
+    if (!canDragInCurrentMode) {
+      return;
+    }
+
+    event.preventDefault();
 
     const point = getCanvasPoint(event);
     if (!point) {
@@ -1083,6 +1282,38 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   };
 
   const onObjectPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rotatingObjectId = rotatingObjectIdRef.current;
+    const rotateSession = objectRotateSessionRef.current;
+    if (rotatingObjectId && rotateSession) {
+      const point = getCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      const currentObject = boardObjects[rotatingObjectId];
+      if (!currentObject) {
+        return;
+      }
+
+      const currentAngle = Math.atan2(point.y - rotateSession.center.y, point.x - rotateSession.center.x);
+      const nextRotation = ((rotateSession.startRotation + (currentAngle - rotateSession.startPointerAngle)) * 180) / Math.PI;
+
+      const nextObject: BoardObject = {
+        ...currentObject,
+        rotation: Math.round(nextRotation),
+      };
+
+      upsertBoardObject(nextObject, false);
+
+      const now = Date.now();
+      if (now - lastObjectDragEmitRef.current >= 24) {
+        socketRef.current?.emit("upsert-object", nextObject);
+        lastObjectDragEmitRef.current = now;
+      }
+
+      return;
+    }
+
     const resizingObjectId = resizingObjectIdRef.current;
     const resizeSession = objectResizeSessionRef.current;
     if (resizingObjectId && resizeSession) {
@@ -1151,6 +1382,19 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   };
 
   const onObjectPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rotatingObjectId = rotatingObjectIdRef.current;
+    if (rotatingObjectId) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      const object = boardObjects[rotatingObjectId];
+      if (object) {
+        socketRef.current?.emit("upsert-object", object);
+      }
+
+      rotatingObjectIdRef.current = null;
+      objectRotateSessionRef.current = null;
+      return;
+    }
+
     const resizingObjectId = resizingObjectIdRef.current;
     if (resizingObjectId) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -1209,15 +1453,54 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
+  const onObjectRotatePointerDown = (event: React.PointerEvent<HTMLButtonElement>, object: BoardObject) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const point = getCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    const center = {
+      x: object.x + object.width / 2,
+      y: object.y + object.height / 2,
+    };
+
+    rotatingObjectIdRef.current = object.id;
+    objectRotateSessionRef.current = {
+      center,
+      startPointerAngle: Math.atan2(point.y - center.y, point.x - center.x),
+      startRotation: ((object.rotation ?? 0) * Math.PI) / 180,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onObjectDragHandlePointerDown = (event: React.PointerEvent<HTMLButtonElement>, object: BoardObject) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    setActiveObjectId(object.id);
+
+    const point = getCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    draggingObjectIdRef.current = object.id;
+    objectDragOffsetRef.current = {
+      x: point.x - object.x,
+      y: point.y - object.y,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
   const onObjectDoubleClick = (object: BoardObject) => {
     setActiveObjectId(object.id);
     setEditingObjectId(object.id);
-    setEditingContent(object.content);
   };
 
   const onObjectContentChange = (objectId: string, value: string) => {
-    setEditingContent(value);
-
     const object = boardObjects[objectId];
     if (!object) {
       return;
@@ -1230,6 +1513,108 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     upsertBoardObject(nextObject, false);
     socketRef.current?.emit("upsert-object", nextObject);
+  };
+
+  const applyStyleToSelectedText = (patch: Partial<TextStyle>) => {
+    const objectId = editingObjectId;
+    const editor = editingElementRef.current;
+    if (!objectId || !editor) {
+      return false;
+    }
+
+    const selection = window.getSelection();
+    let range: Range | null = null;
+    if (selection && selection.rangeCount > 0) {
+      const directRange = selection.getRangeAt(0);
+      if (!directRange.collapsed && editor.contains(directRange.commonAncestorContainer)) {
+        range = directRange.cloneRange();
+      }
+    }
+
+    if (!range) {
+      const savedRange = selectedTextRangeRef.current;
+      if (savedRange && !savedRange.collapsed && editor.contains(savedRange.commonAncestorContainer)) {
+        range = savedRange.cloneRange();
+      }
+    }
+
+    if (!range) {
+      return false;
+    }
+
+    const fragment = range.extractContents();
+    const baseSpan = document.createElement("span");
+
+    if (patch.fontFamily) {
+      baseSpan.style.fontFamily = patch.fontFamily;
+    }
+
+    if (typeof patch.fontSize === "number") {
+      baseSpan.style.fontSize = `${patch.fontSize}px`;
+    }
+
+    if (patch.color) {
+      baseSpan.style.color = patch.color;
+    }
+
+    if (typeof patch.bold === "boolean") {
+      baseSpan.style.fontWeight = patch.bold ? "700" : "400";
+    }
+
+    if (typeof patch.italic === "boolean") {
+      baseSpan.style.fontStyle = patch.italic ? "italic" : "normal";
+    }
+
+    if (typeof patch.strikethrough === "boolean") {
+      baseSpan.style.textDecoration = patch.strikethrough ? "line-through" : "none";
+    }
+
+    baseSpan.appendChild(fragment);
+    range.insertNode(baseSpan);
+
+    if (patch.spoiler) {
+      const applySpoilerToTextNodes = (root: Node) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const textNodes: Text[] = [];
+        let current = walker.nextNode();
+        while (current) {
+          if (current.nodeType === Node.TEXT_NODE && current.nodeValue?.trim()) {
+            textNodes.push(current as Text);
+          }
+          current = walker.nextNode();
+        }
+
+        for (const textNode of textNodes) {
+          const parent = textNode.parentElement;
+          if (parent?.classList.contains("cb-inline-spoiler")) {
+            continue;
+          }
+
+          const spoilerSpan = document.createElement("span");
+          spoilerSpan.className = "cb-inline-spoiler";
+          spoilerSpan.dataset.inlineSpoiler = "true";
+          spoilerSpan.style.backgroundColor = "rgba(0,0,0,0.18)";
+          spoilerSpan.style.borderRadius = "2px";
+          parent?.insertBefore(spoilerSpan, textNode);
+          spoilerSpan.appendChild(textNode);
+        }
+      };
+
+      applySpoilerToTextNodes(baseSpan);
+    }
+
+    const caretRange = document.createRange();
+    caretRange.setStartAfter(baseSpan);
+    caretRange.collapse(true);
+    selectedTextRangeRef.current = null;
+
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(caretRange);
+    }
+
+    onObjectContentChange(objectId, editor.innerHTML);
+    return true;
   };
 
   const updateActiveObjectStyle = (patch: Partial<TextStyle>) => {
@@ -1253,10 +1638,70 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     upsertBoardObject(nextObject, true);
   };
 
-  const finishObjectEditing = () => {
+  const updateFontFamily = (fontFamily: string) => {
+    if (applyStyleToSelectedText({ fontFamily })) {
+      return;
+    }
+
+    updateActiveObjectStyle({ fontFamily });
+  };
+
+  const updateFontSize = (fontSize: number) => {
+    const normalizedSize = clamp(fontSize || 8, 8, 120);
+    if (applyStyleToSelectedText({ fontSize: normalizedSize })) {
+      return;
+    }
+
+    updateActiveObjectStyle({ fontSize: normalizedSize });
+  };
+
+  const updateFontColor = (nextColor: string) => {
+    if (applyStyleToSelectedText({ color: nextColor })) {
+      return;
+    }
+
+    updateActiveObjectStyle({ color: nextColor });
+  };
+
+  const updateTextStyleFlag = (key: keyof Pick<TextStyle, "bold" | "italic" | "strikethrough" | "spoiler">) => {
+    if (!activeObjectId) {
+      return;
+    }
+
+    const object = boardObjects[activeObjectId];
+    if (!object) {
+      return;
+    }
+
+    if (key === "spoiler") {
+      const applied = applyStyleToSelectedText({ spoiler: true });
+      if (!applied) {
+        return;
+      }
+      return;
+    }
+
+    const nextValue = !object.style[key];
+    if (applyStyleToSelectedText({ [key]: nextValue })) {
+      return;
+    }
+
+    updateActiveObjectStyle({ [key]: nextValue });
+  };
+
+  const finishObjectEditing = (event?: React.FocusEvent<HTMLElement>) => {
+    const nextFocusedNode = event?.relatedTarget as Node | null;
+    if (nextFocusedNode && activeToolbarRef.current?.contains(nextFocusedNode)) {
+      return;
+    }
+
     const editingId = editingObjectId;
     if (!editingId) {
       return;
+    }
+
+    if (editingElementRef.current) {
+      onObjectContentChange(editingId, editingElementRef.current.innerHTML);
     }
 
     const object = boardObjects[editingId];
@@ -1264,18 +1709,109 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       socketRef.current?.emit("upsert-object", object);
     }
 
+    if (editingElementRef.current) {
+      delete editingElementRef.current.dataset.editingObjectId;
+    }
+
+    selectedTextRangeRef.current = null;
+
     setEditingObjectId(null);
   };
 
   useEffect(() => {
+    if (!editingObjectId) {
+      return;
+    }
+
+    const object = boardObjects[editingObjectId];
+    const editor = editingElementRef.current;
+    if (!object || !editor) {
+      return;
+    }
+
+    if (editor.dataset.editingObjectId === editingObjectId) {
+      return;
+    }
+
+    editor.innerHTML = toMarkupContent(object.content);
+    editor.dataset.editingObjectId = editingObjectId;
+  }, [boardObjects, editingObjectId]);
+
+  useEffect(() => {
+    const onSelectionChange = () => {
+      const editor = editingElementRef.current;
+      if (!editor) {
+        selectedTextRangeRef.current = null;
+        return;
+      }
+
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      if (!range.collapsed && editor.contains(range.commonAncestorContainer)) {
+        selectedTextRangeRef.current = range.cloneRange();
+      }
+    };
+
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+    };
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMode("drag");
+        event.preventDefault();
+        return;
+      }
+
       const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
         return;
       }
 
       const isCtrlOrMeta = event.ctrlKey || event.metaKey;
       const lowerKey = event.key.toLowerCase();
+
+      if (!isCtrlOrMeta) {
+        if (lowerKey === "q") {
+          setMode("draw");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "s") {
+          setMode("select");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "d") {
+          setMode("drag");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "e") {
+          setMode("erase");
+          event.preventDefault();
+          return;
+        }
+
+        if (lowerKey === "p") {
+          setMode("picker");
+          event.preventDefault();
+          return;
+        }
+      }
 
       if (isCtrlOrMeta && lowerKey === "z" && !event.shiftKey) {
         const last = undoStackRef.current.pop();
@@ -1381,6 +1917,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <button
               type="button"
               onClick={() => setMode("draw")}
+              title="Pen (Q)"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "draw" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
@@ -1390,6 +1927,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <button
               type="button"
               onClick={() => setMode("erase")}
+              title="Eraser (E)"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "erase" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
@@ -1408,6 +1946,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <button
               type="button"
               onClick={() => setMode("select")}
+              title="Select (S)"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "select" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
@@ -1416,7 +1955,18 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             </button>
             <button
               type="button"
+              onClick={() => setMode("drag")}
+              title="Drag (D)"
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                mode === "drag" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
+              }`}
+            >
+              ✋ Drag
+            </button>
+            <button
+              type="button"
               onClick={() => setMode("picker")}
+              title="Picker (P)"
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === "picker" ? "bg-zinc-900 text-white" : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300"
               }`}
@@ -1498,6 +2048,29 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       </header>
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-2 p-3 sm:p-4">
+        <style jsx global>{`
+          .cb-block-spoiler {
+            filter: blur(6px);
+            transition: filter 120ms ease;
+          }
+
+          .cb-block-spoiler:hover,
+          .cb-reveal-spoilers {
+            filter: blur(0);
+          }
+
+          .cb-inline-spoiler {
+            filter: blur(3px);
+            transition: filter 120ms ease;
+          }
+
+          .cb-inline-spoiler:hover,
+          .cb-reveal-spoilers .cb-inline-spoiler,
+          .cb-reveal-spoilers [data-inline-spoiler="true"] {
+            filter: blur(0);
+            background: transparent;
+          }
+        `}</style>
         <div className="flex items-center justify-between text-sm text-zinc-500">
           <span>{isConnected ? "Connected" : "Connecting..."}</span>
           {joinError ? <span className="font-medium text-red-600">{joinError}</span> : null}
@@ -1518,7 +2091,9 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
           {Object.values(boardObjects).map((object) => (
             <div
               key={object.id}
-              className="absolute z-20 cursor-move select-none"
+              className={`absolute z-20 select-none ${
+                editingObjectId === object.id ? "cursor-text" : "cursor-move"
+              }`}
               style={{
                 left: `${(object.x / canvasSize.width) * 100}%`,
                 top: `${(object.y / canvasSize.height) * 100}%`,
@@ -1526,21 +2101,32 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                 height: `${(object.height / canvasSize.height) * 100}%`,
                 minWidth: "60px",
                 minHeight: "40px",
+                transform: `rotate(${object.rotation}deg)`,
+                transformOrigin: "center center",
               }}
               onPointerDown={(event) => onObjectPointerDown(event, object)}
               onPointerMove={onObjectPointerMove}
               onPointerUp={onObjectPointerUp}
               onPointerCancel={onObjectPointerUp}
               onDoubleClick={() => onObjectDoubleClick(object)}
+              onPointerEnter={() => setHoveredObjectId(object.id)}
+              onPointerLeave={() =>
+                setHoveredObjectId((previousHoveredId) =>
+                  previousHoveredId === object.id ? null : previousHoveredId,
+                )
+              }
             >
               {activeObjectId === object.id ? (
                 <div
+                  ref={activeObjectId === object.id ? activeToolbarRef : null}
                   className="absolute bottom-full left-0 z-30 mb-2 flex flex-wrap items-center gap-1 rounded-md border border-zinc-300 bg-white p-1 shadow"
-                  onPointerDown={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                  }}
                 >
                   <select
                     value={object.style.fontFamily}
-                    onChange={(event) => updateActiveObjectStyle({ fontFamily: event.target.value })}
+                    onChange={(event) => updateFontFamily(event.target.value)}
                     className="rounded border border-zinc-300 bg-white px-1 py-0.5 text-xs"
                   >
                     <option value="Arial">Arial</option>
@@ -1555,22 +2141,18 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                     min={8}
                     max={120}
                     value={object.style.fontSize}
-                    onChange={(event) =>
-                      updateActiveObjectStyle({
-                        fontSize: clamp(Number(event.target.value) || 8, 8, 120),
-                      })
-                    }
+                    onChange={(event) => updateFontSize(Number(event.target.value))}
                     className="w-14 rounded border border-zinc-300 px-1 py-0.5 text-xs"
                   />
                   <input
                     type="color"
                     value={object.style.color}
-                    onChange={(event) => updateActiveObjectStyle({ color: event.target.value })}
+                    onChange={(event) => updateFontColor(event.target.value)}
                     className="h-6 w-8 rounded border border-zinc-300"
                   />
                   <button
                     type="button"
-                    onClick={() => updateActiveObjectStyle({ bold: !object.style.bold })}
+                    onClick={() => updateTextStyleFlag("bold")}
                     className={`rounded px-1.5 py-0.5 text-xs font-bold ${
                       object.style.bold ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
                     }`}
@@ -1579,7 +2161,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                   </button>
                   <button
                     type="button"
-                    onClick={() => updateActiveObjectStyle({ italic: !object.style.italic })}
+                    onClick={() => updateTextStyleFlag("italic")}
                     className={`rounded px-1.5 py-0.5 text-xs italic ${
                       object.style.italic ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
                     }`}
@@ -1588,11 +2170,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      updateActiveObjectStyle({
-                        strikethrough: !object.style.strikethrough,
-                      })
-                    }
+                    onClick={() => updateTextStyleFlag("strikethrough")}
                     className={`rounded px-1.5 py-0.5 text-xs line-through ${
                       object.style.strikethrough ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
                     }`}
@@ -1601,7 +2179,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                   </button>
                   <button
                     type="button"
-                    onClick={() => updateActiveObjectStyle({ spoiler: !object.style.spoiler })}
+                    onClick={() => updateTextStyleFlag("spoiler")}
                     className={`rounded px-1.5 py-0.5 text-xs ${
                       object.style.spoiler ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700"
                     }`}
@@ -1613,14 +2191,14 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
               {object.type === "text" ? (
                 editingObjectId === object.id ? (
-                  <textarea
-                    autoFocus
-                    value={editingContent}
-                    onChange={(event) => onObjectContentChange(object.id, event.target.value)}
+                  <div
+                    ref={editingObjectId === object.id ? editingElementRef : null}
+                    contentEditable
+                    suppressContentEditableWarning
+                    onInput={(event) => onObjectContentChange(object.id, event.currentTarget.innerHTML)}
                     onBlur={finishObjectEditing}
-                    className="w-full resize-none rounded border border-zinc-300 bg-white/90 px-1 py-0.5 outline-none"
+                    className="h-full w-full overflow-auto rounded border border-zinc-300 bg-white/90 px-1 py-0.5 outline-none"
                     style={{
-                      height: "100%",
                       fontFamily: object.style.fontFamily,
                       fontSize: `${object.style.fontSize}px`,
                       color: object.style.color,
@@ -1633,65 +2211,90 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                   <div
                     className={`rounded border px-1 py-0.5 ${
                       activeObjectId === object.id ? "border-blue-400" : "border-transparent"
-                    } ${object.style.spoiler ? "bg-black" : "bg-transparent"}`}
-                    style={{
-                      width: "100%",
-                      minHeight: "100%",
-                      fontFamily: object.style.fontFamily,
-                      fontSize: `${object.style.fontSize}px`,
-                      color: object.style.spoiler ? "transparent" : object.style.color,
-                      fontWeight: object.style.bold ? 700 : 400,
-                      fontStyle: object.style.italic ? "italic" : "normal",
-                      textDecoration: object.style.strikethrough ? "line-through" : "none",
-                      textShadow: object.style.spoiler ? `0 0 6px ${object.style.color}` : "none",
-                      whiteSpace: "pre-wrap",
-                    }}
-                    title={object.style.spoiler ? "Spoiler text" : undefined}
-                  >
-                    {object.content || " "}
-                  </div>
-                )
-              ) : (
-                editingObjectId === object.id ? (
-                  <textarea
-                    autoFocus
-                    value={editingContent}
-                    onChange={(event) => onObjectContentChange(object.id, event.target.value)}
-                    onBlur={finishObjectEditing}
-                    className="w-full resize-none rounded border border-amber-600 bg-[#E1AD01] px-3 py-2 outline-none shadow-sm"
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      fontFamily: object.style.fontFamily,
-                      fontSize: `${object.style.fontSize}px`,
-                      color: object.style.spoiler ? "transparent" : object.style.color,
-                      fontWeight: object.style.bold ? 700 : 400,
-                      fontStyle: object.style.italic ? "italic" : "normal",
-                      textDecoration: object.style.strikethrough ? "line-through" : "none",
-                      textShadow: object.style.spoiler ? `0 0 6px ${object.style.color}` : "none",
-                    }}
-                  />
-                ) : (
-                  <div
-                    className={`rounded border bg-[#E1AD01] px-3 py-2 shadow-sm ${
-                      activeObjectId === object.id ? "border-blue-500" : "border-amber-500"
+                    } ${
+                      object.style.spoiler && hoveredObjectId !== object.id ? "cb-block-spoiler" : ""
+                    } ${
+                      hoveredObjectId === object.id ? "cb-reveal-spoilers" : ""
                     }`}
                     style={{
                       width: "100%",
                       minHeight: "100%",
                       fontFamily: object.style.fontFamily,
                       fontSize: `${object.style.fontSize}px`,
-                      color: object.style.spoiler ? "transparent" : object.style.color,
+                      color: object.style.color,
                       fontWeight: object.style.bold ? 700 : 400,
                       fontStyle: object.style.italic ? "italic" : "normal",
                       textDecoration: object.style.strikethrough ? "line-through" : "none",
-                      textShadow: object.style.spoiler ? `0 0 6px ${object.style.color}` : "none",
+                      textShadow: "none",
+                      whiteSpace: "pre-wrap",
                     }}
+                    title={object.style.spoiler ? "Spoiler text" : undefined}
+                    dangerouslySetInnerHTML={{ __html: toMarkupContent(object.content) || " " }}
                   >
-                    {object.content || " "}
+                  </div>
+                )
+              ) : (
+                editingObjectId === object.id ? (
+                  <div
+                    ref={editingObjectId === object.id ? editingElementRef : null}
+                    contentEditable
+                    suppressContentEditableWarning
+                    onInput={(event) => onObjectContentChange(object.id, event.currentTarget.innerHTML)}
+                    onBlur={finishObjectEditing}
+                    className="h-full w-full overflow-auto rounded border border-amber-600 bg-[#E1AD01] px-3 py-2 outline-none shadow-sm"
+                    style={{
+                      fontFamily: object.style.fontFamily,
+                      fontSize: `${object.style.fontSize}px`,
+                      color: object.style.color,
+                      fontWeight: object.style.bold ? 700 : 400,
+                      fontStyle: object.style.italic ? "italic" : "normal",
+                      textDecoration: object.style.strikethrough ? "line-through" : "none",
+                      textShadow: "none",
+                    }}
+                  />
+                ) : (
+                  <div
+                    className={`rounded border bg-[#E1AD01] px-3 py-2 shadow-sm ${
+                      activeObjectId === object.id ? "border-blue-500" : "border-amber-500"
+                    } ${
+                      object.style.spoiler && hoveredObjectId !== object.id ? "cb-block-spoiler" : ""
+                    } ${hoveredObjectId === object.id ? "cb-reveal-spoilers" : ""}`}
+                    style={{
+                      width: "100%",
+                      minHeight: "100%",
+                      fontFamily: object.style.fontFamily,
+                      fontSize: `${object.style.fontSize}px`,
+                      color: object.style.color,
+                      fontWeight: object.style.bold ? 700 : 400,
+                      fontStyle: object.style.italic ? "italic" : "normal",
+                      textDecoration: object.style.strikethrough ? "line-through" : "none",
+                      textShadow: "none",
+                    }}
+                    dangerouslySetInnerHTML={{ __html: toMarkupContent(object.content) || " " }}
+                  >
                   </div>
                 )
               )}
+
+              <button
+                type="button"
+                className="absolute bottom-0 left-0 h-4 w-4 -translate-x-1/2 translate-y-1/2 cursor-move rounded-sm border border-zinc-700 bg-white text-[10px] leading-none"
+                onPointerDown={(event) => onObjectDragHandlePointerDown(event, object)}
+                aria-label="Drag object"
+                title="Drag object"
+              >
+                ✥
+              </button>
+
+              <button
+                type="button"
+                className="absolute bottom-0 right-5 h-4 w-4 translate-x-1/2 translate-y-1/2 cursor-alias rounded-sm border border-zinc-700 bg-white text-[10px] leading-none"
+                onPointerDown={(event) => onObjectRotatePointerDown(event, object)}
+                aria-label="Rotate object"
+                title="Rotate"
+              >
+                ↻
+              </button>
 
               <button
                 type="button"
@@ -1710,6 +2313,18 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                 top: `${(displayedSelection.y / canvasSize.height) * 100}%`,
                 width: `${(displayedSelection.width / canvasSize.width) * 100}%`,
                 height: `${(displayedSelection.height / canvasSize.height) * 100}%`,
+              }}
+            />
+          ) : null}
+
+          {objectCreatePreview ? (
+            <div
+              className="pointer-events-none absolute border-2 border-dashed border-zinc-700/70 bg-zinc-300/20"
+              style={{
+                left: `${(objectCreatePreview.x / canvasSize.width) * 100}%`,
+                top: `${(objectCreatePreview.y / canvasSize.height) * 100}%`,
+                width: `${(objectCreatePreview.width / canvasSize.width) * 100}%`,
+                height: `${(objectCreatePreview.height / canvasSize.height) * 100}%`,
               }}
             />
           ) : null}
