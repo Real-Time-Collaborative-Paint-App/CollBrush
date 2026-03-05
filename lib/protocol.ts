@@ -94,6 +94,24 @@ export interface CursorState extends CursorMovePayload {
   animalEmoji: string;
 }
 
+export interface BottleSpinParticipant {
+  id: string;
+  nickname: string;
+  emoji: string;
+  color: string;
+  angle: number;
+}
+
+export interface BottleSpinPayload {
+  id: string;
+  x: number;
+  y: number;
+  participants: BottleSpinParticipant[];
+  selectedId: string;
+  bottleRotation: number;
+  duration: number;
+}
+
 export type JoinBoardErrorCode = "BOARD_FULL" | "INVALID_BOARD" | "INVALID_USER";
 
 export interface JoinBoardSuccess {

@@ -14,7 +14,7 @@ type WrappedTextLine = {
   width: number;
 };
 
-export const BOTTLE_NECK_ANGLE = -35;
+export const BOTTLE_NECK_ANGLE = -90;
 
 export const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));

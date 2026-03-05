@@ -18,7 +18,7 @@ describe("board presence query builder", () => {
 describe("board presence local fallback", () => {
   it("merges local heartbeat presence with remote data", () => {
     const store = new Map<string, string>();
-    (globalThis as unknown as { window: Window & { localStorage: Storage } }).window = {
+    (globalThis as { window?: { localStorage: Storage } }).window = {
       localStorage: {
         getItem: (key: string) => (store.has(key) ? (store.get(key) as string) : null),
         setItem: (key: string, value: string) => {
@@ -33,7 +33,7 @@ describe("board presence local fallback", () => {
         key: () => null,
         length: 0,
       },
-    } as Window & { localStorage: Storage };
+    };
 
     upsertLocalBoardPresence("board-1", {
       userId: "user-1",

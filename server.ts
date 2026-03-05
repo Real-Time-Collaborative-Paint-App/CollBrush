@@ -4,6 +4,7 @@ import path from "node:path";
 import next from "next";
 import { Server as IOServer } from "socket.io";
 import type {
+  BottleSpinPayload,
   BoardAction,
   BoardObject,
   BoardUser,
@@ -424,6 +425,19 @@ void app.prepare().then(async () => {
       }
 
       socket.to(boardId).emit("replace-canvas-preview", replace);
+    });
+
+    socket.on("bottle-spin", (payload: BottleSpinPayload) => {
+      const boardId = socket.data.boardId as string | undefined;
+      if (!boardId) {
+        return;
+      }
+
+      if (!boards.has(boardId)) {
+        return;
+      }
+
+      socket.to(boardId).emit("bottle-spin", payload);
     });
 
     socket.on("upsert-object", (object: BoardObject) => {

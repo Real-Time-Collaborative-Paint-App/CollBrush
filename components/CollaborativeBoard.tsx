@@ -8,6 +8,7 @@ import { removeLocalBoardPresence, upsertLocalBoardPresence } from "@/lib/board-
 import { readStoredBoards, upsertStoredBoard } from "@/lib/boards";
 import { getSocketServerUrl } from "@/lib/runtime-config";
 import type {
+  BottleSpinPayload,
   BoardAction,
   BoardObject,
   BoardUser,
@@ -284,6 +285,27 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     confettiTimeoutsRef.current.push(timeoutId);
   }, []);
 
+  const enqueueBottleBurst = useCallback((payload: BottleSpinPayload) => {
+    setBottleBursts((previous) => [
+      ...previous,
+      {
+        id: payload.id,
+        x: payload.x,
+        y: payload.y,
+        participants: payload.participants,
+        selectedId: payload.selectedId,
+        bottleRotation: payload.bottleRotation,
+        duration: payload.duration,
+      },
+    ]);
+
+    const timeoutId = window.setTimeout(() => {
+      setBottleBursts((previous) => previous.filter((burst) => burst.id !== payload.id));
+      confettiTimeoutsRef.current = confettiTimeoutsRef.current.filter((id) => id !== timeoutId);
+    }, payload.duration + 1800);
+    confettiTimeoutsRef.current.push(timeoutId);
+  }, []);
+
   const launchBottleSpin = useCallback(
     (x: number, y: number) => {
       if (boardUsers.length === 0) {
@@ -320,26 +342,20 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       const bottleRotation = spins * 360 + normalizedTargetRotation;
       const duration = 2400 + getRandomIntInclusive(0, 700);
 
-      setBottleBursts((previous) => [
-        ...previous,
-        {
-          id: burstId,
-          x: centerX,
-          y: centerY,
-          participants,
-          selectedId: selected.id,
-          bottleRotation,
-          duration,
-        },
-      ]);
+      const payload: BottleSpinPayload = {
+        id: burstId,
+        x: centerX,
+        y: centerY,
+        participants,
+        selectedId: selected.id,
+        bottleRotation,
+        duration,
+      };
 
-      const timeoutId = window.setTimeout(() => {
-        setBottleBursts((previous) => previous.filter((burst) => burst.id !== burstId));
-        confettiTimeoutsRef.current = confettiTimeoutsRef.current.filter((id) => id !== timeoutId);
-      }, duration + 1800);
-      confettiTimeoutsRef.current.push(timeoutId);
+      enqueueBottleBurst(payload);
+      socketRef.current?.emit("bottle-spin", payload);
     },
-    [boardUsers],
+    [boardUsers, enqueueBottleBurst],
   );
 
   const markBoardDirty = useCallback(() => {
@@ -1199,6 +1215,10 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       applyReplaceActionToCanvas(replace);
     });
 
+    socket.on("bottle-spin", (payload: BottleSpinPayload) => {
+      enqueueBottleBurst(payload);
+    });
+
     socket.on("upsert-object", (object: BoardObject) => {
       upsertBoardObject(object, false);
       boardDirtyRef.current = true;
@@ -1245,6 +1265,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     removeBoardObject,
     redrawFromActions,
     router,
+    enqueueBottleBurst,
     upsertBoardObject,
     userId,
   ]);
@@ -3804,6 +3825,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
                     transformOrigin: "center center",
                   }}
                 >
+                  <span className="absolute left-1/2 top-1 h-3 w-1.5 -translate-x-1/2 rounded-sm bg-amber-700" />
                   <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-5xl">🍾</span>
                 </div>
               </div>

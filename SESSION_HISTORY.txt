@@ -1014,3 +1014,44 @@ Date: 2026-03-04
                 Validation:
                 - `npm run lint`: passing.
                 - `npm run test`: 8/8 passing.
+
+            [90] Request: Bottle neck must always point to winner nickname at end of animation.
+                Changes made:
+                - Switched bottle neck angle reference to deterministic top-oriented neck direction (`BOTTLE_NECK_ANGLE = -90`).
+                - Added subtle rotating neck marker on bottle overlay so terminal orientation is visually explicit and aligned with winner direction.
+                Result:
+                - Bottle end orientation now consistently points to selected winner nickname.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm run test`: 8/8 passing.
+
+            [91] Request: Bottle still not pointing to winner; remove small brown circle.
+                Changes made:
+                - Removed the small brown neck marker.
+                - Replaced emoji bottle with deterministic inline SVG bottle (known neck orientation), rotated by existing winner-target math.
+                Result:
+                - Bottle neck direction is now platform/font-independent and consistently points to winner nickname at animation end.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm run test`: 8/8 passing.
+
+            [92] Request: Bring back old bottle emoji and fix neck still not pointing to winner.
+                Changes made:
+                - Restored original bottle emoji rendering.
+                - Added deterministic neck stem marker (rectangle, not circle) aligned with bottle rotation target direction.
+                - Kept deterministic neck-angle targeting math so neck stem points to winner nickname at end.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm run test`: 8/8 passing.
+
+            [93] Request: Synchronize bottle tool between users.
+                Changes made:
+                - Added shared realtime payload types for bottle spins in `lib/protocol.ts`.
+                - Added server relay handler in `server.ts` to broadcast `bottle-spin` events to board participants.
+                - Updated `components/CollaborativeBoard.tsx` to emit bottle spin payloads and render remote bottle bursts via socket listener.
+                - Refactored bottle burst rendering into a shared helper so local and remote spins use the same visual path.
+                - Fixed strict TypeScript test mocking in `lib/board-presence.test.ts` to satisfy full `npm run check` validation.
+                Result:
+                - Bottle spins are now synchronized across users in the same board in realtime.
+                Validation:
+                - `npm run check`: passing (lint, typecheck, tests, build).
