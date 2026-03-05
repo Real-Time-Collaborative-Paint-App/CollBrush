@@ -964,3 +964,39 @@ Date: 2026-03-04
                 - Fixed strict typecheck issues surfaced by new gate.
                 Validation:
                 - `npm run check`: passing (lint + typecheck + tests + production build).
+
+            [86] Request: Prepare for Vercel deployment.
+                Changes made:
+                - Added runtime backend URL config module:
+                    - `lib/runtime-config.ts` (`NEXT_PUBLIC_BACKEND_URL` support).
+                - Updated frontend networking to support split deployment (Vercel frontend + external realtime backend):
+                    - `components/CollaborativeBoard.tsx` now connects Socket.IO via configurable backend URL.
+                    - Added `connect_error` handling for clearer realtime connection failures.
+                    - `lib/board-presence.ts` now fetches presence endpoint through configurable backend URL.
+                - Added `.env.example` documenting `NEXT_PUBLIC_BACKEND_URL`.
+                - Updated `README.md` with explicit Vercel deployment guide and architecture notes.
+                Validation:
+                - `npm run check`: passing (lint + typecheck + tests + production build).
+
+            [87] Request: Fix My Boards showing 0 active users when there should be 1.
+                Root cause:
+                - Cross-origin fetch to `/api/board-presence` from Vercel frontend to external backend lacked CORS headers, causing browser-blocked responses and fallback `0` display.
+                Changes made:
+                - Added CORS headers for `/api/board-presence` responses in `server.ts`.
+                - Added `OPTIONS` handling for `/api/board-presence` (204) for robust cross-origin behavior.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm run test`: 7/7 passing.
+
+            [88] Request: Active users still shows 0 while board has 1 online user.
+                Changes made:
+                - Added local-presence heartbeat fallback in `lib/board-presence.ts`:
+                    - `upsertLocalBoardPresence`,
+                    - `removeLocalBoardPresence`,
+                    - `mergeBoardPresenceWithLocal`.
+                - Updated board runtime (`components/CollaborativeBoard.tsx`) to write/remove local heartbeat for current connected user every 2s.
+                - Updated My Boards page (`app/my-boards/page.tsx`) to merge remote presence with local heartbeat fallback.
+                - Added unit test coverage in `lib/board-presence.test.ts` for local fallback merge behavior.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm run test`: 8/8 passing.

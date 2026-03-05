@@ -4,7 +4,11 @@ import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { readStoredAccount } from "@/lib/account";
-import { type BoardPresence, fetchBoardPresence } from "@/lib/board-presence";
+import {
+  type BoardPresence,
+  fetchBoardPresence,
+  mergeBoardPresenceWithLocal,
+} from "@/lib/board-presence";
 import {
   type StoredBoard,
   readStoredBoards,
@@ -74,12 +78,13 @@ export default function MyBoardsPage() {
     let active = true;
 
     const fetchPresence = async () => {
-      const presence = await fetchBoardPresence(boards.map((board) => board.id));
-      if (!active || !presence) {
+      const boardIds = boards.map((board) => board.id);
+      const presence = await fetchBoardPresence(boardIds);
+      if (!active) {
         return;
       }
 
-      setPresenceByBoard(presence);
+      setPresenceByBoard(mergeBoardPresenceWithLocal(boardIds, presence ?? {}));
     };
 
     void fetchPresence();

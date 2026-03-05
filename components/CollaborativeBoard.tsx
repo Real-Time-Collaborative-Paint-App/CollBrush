@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { readStoredAccount, saveAccount } from "@/lib/account";
+import { removeLocalBoardPresence, upsertLocalBoardPresence } from "@/lib/board-presence";
 import { readStoredBoards, upsertStoredBoard } from "@/lib/boards";
+import { getSocketServerUrl } from "@/lib/runtime-config";
 import type {
   BoardAction,
   BoardObject,
@@ -1052,7 +1054,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       nickname: nextNickname,
     });
 
-    const socket = io({
+    const socket = io(getSocketServerUrl(), {
       path: "/socket.io",
       transports: ["websocket", "polling"],
     });
@@ -1096,6 +1098,11 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     });
 
     socket.on("disconnect", () => {
+      setIsConnected(false);
+    });
+
+    socket.on("connect_error", () => {
+      setJoinError("Cannot connect to realtime server.");
       setIsConnected(false);
     });
 
@@ -2840,6 +2847,31 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       saveProgressTimeoutRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (!isConnected) {
+      removeLocalBoardPresence(boardId, userId);
+      return;
+    }
+
+    const currentUser = boardUsers.find((user) => user.userId === userId);
+    const heartbeat = () => {
+      upsertLocalBoardPresence(boardId, {
+        userId,
+        nickname: currentUser?.nickname ?? nickname,
+        animalEmoji: currentUser?.animalEmoji ?? "👤",
+        cursorColor: currentUser?.cursorColor ?? "#111827",
+      });
+    };
+
+    heartbeat();
+    const intervalId = window.setInterval(heartbeat, 2000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      removeLocalBoardPresence(boardId, userId);
+    };
+  }, [boardId, boardUsers, isConnected, nickname, userId]);
 
   const handleManualSaveProgress = useCallback(() => {
     boardDirtyRef.current = true;

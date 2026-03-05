@@ -206,6 +206,20 @@ void app.prepare().then(async () => {
     const requestUrl = req.url ?? "/";
     const url = new URL(requestUrl, `http://${req.headers.host ?? "localhost"}`);
 
+    if (url.pathname === "/api/board-presence") {
+      const requestOrigin = req.headers.origin;
+      res.setHeader("Access-Control-Allow-Origin", requestOrigin || "*");
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+      if (method === "OPTIONS") {
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+    }
+
     if (method === "GET" && url.pathname === "/api/board-presence") {
       const rawIds = url.searchParams.getAll("boardId");
       const presence = buildPresenceSnapshot(boards, rawIds);

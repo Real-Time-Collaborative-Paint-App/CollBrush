@@ -36,6 +36,20 @@ Open http://localhost:3000.
 - Server persistence uses primary + temp + backup files under `.data/` for safer recovery.
 - App includes `not-found` and global `error` boundaries for safer user-facing failure handling.
 
+## Vercel deployment
+
+This repo uses a custom realtime server (`server.ts`) for Socket.IO + persistence. Vercel should host the Next.js frontend, while realtime backend runs separately (e.g. Render/Railway/Fly/VM).
+
+1. Deploy frontend to Vercel from this repo.
+2. Deploy backend service that runs `server.ts` (`npm run start`).
+3. In Vercel project settings, set environment variable:
+	- `NEXT_PUBLIC_BACKEND_URL=https://your-backend-domain`
+4. Redeploy frontend.
+
+Notes:
+- Frontend calls `/api/board-presence` and Socket.IO via `NEXT_PUBLIC_BACKEND_URL` when set.
+- Without `NEXT_PUBLIC_BACKEND_URL`, frontend defaults to same-origin backend (local all-in-one mode).
+
 ## Architecture
 
 - `server.ts` hosts Next.js and Socket.IO in one Node server.
