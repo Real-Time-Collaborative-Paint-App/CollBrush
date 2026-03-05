@@ -63,6 +63,9 @@ import {
   SHAPE_OPTIONS,
 } from "./collaborative-board/shape-config";
 
+const getBoardSnapshotStorageKey = (boardId: string) =>
+  `collbrush_board_snapshot_${boardId.trim().slice(0, 80)}`;
+
 export default function CollaborativeBoard({ boardId, userId, nickname }: CollaborativeBoardProps) {
   const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -654,6 +657,17 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       return;
     }
 
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(
+          getBoardSnapshotStorageKey(boardId),
+          composed.toDataURL("image/png"),
+        );
+      } catch {
+        // ignore storage quota/localStorage errors
+      }
+    }
+
     const previewWidth = 360;
     const previewHeight = Math.max(1, Math.round((composed.height / composed.width) * previewWidth));
     const previewCanvas = document.createElement("canvas");
@@ -1092,7 +1106,27 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             }),
           ) as Record<string, BoardObject>,
         );
-        void redrawFromActions();
+        const hasServerState = response.actions.length > 0 || response.objects.length > 0;
+        if (!hasServerState && typeof window !== "undefined") {
+          const localSnapshot = window.localStorage.getItem(getBoardSnapshotStorageKey(boardId));
+          if (localSnapshot && localSnapshot.startsWith("data:image")) {
+            const replace: ReplaceCanvasAction = {
+              dataUrl: localSnapshot,
+            };
+            actionsRef.current = [
+              {
+                type: "replace",
+                replace,
+              },
+            ];
+            applyReplaceActionToCanvas(replace);
+            socketRef.current?.emit("replace-canvas", replace);
+          } else {
+            void redrawFromActions();
+          }
+        } else {
+          void redrawFromActions();
+        }
         boardDirtyRef.current = true;
       });
     });

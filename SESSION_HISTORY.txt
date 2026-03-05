@@ -1000,3 +1000,17 @@ Date: 2026-03-04
                 Validation:
                 - `npm run lint`: passing.
                 - `npm run test`: 8/8 passing.
+
+            [89] Request: Progress still not restored between sessions after reopening board.
+                Root cause:
+                - In some deployments, board can reopen with empty server state (cold-start/ephemeral state timing), resulting in blank canvas even though prior session had drawings.
+                Changes made:
+                - Added local full-board snapshot persistence in `components/CollaborativeBoard.tsx` during preview persistence flow.
+                - Added restore fallback on join:
+                    - when server returns empty state, board attempts restore from local snapshot,
+                    - restored snapshot is immediately emitted via `replace-canvas` to sync backend state.
+                Result:
+                - Reopened board now restores visible progress even if server returns empty state at join.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm run test`: 8/8 passing.
