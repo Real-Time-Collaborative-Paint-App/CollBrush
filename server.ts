@@ -15,6 +15,15 @@ import type {
   JoinBoardRequest,
   JoinBoardResponse,
 } from "./lib/protocol";
+import {
+  MAX_USERS_PER_BOARD,
+  buildPresenceSnapshot,
+  canUserJoinBoard,
+  parsePersistedBoards,
+  serializeBoardsForPersistence,
+  shouldFlushAfterLeave,
+  type PersistedBoardsFile,
+} from "./lib/server-utils";
 
 const dev = process.env.NODE_ENV !== "production";
 const host = "0.0.0.0";
@@ -29,18 +38,11 @@ type BoardState = {
   objects: Map<string, BoardObject>;
 };
 
-type PersistedBoardState = {
-  actions: BoardAction[];
-  objects: BoardObject[];
-};
-
-type PersistedBoardsFile = Record<string, PersistedBoardState>;
-
-const MAX_USERS_PER_BOARD = 10;
 const MAX_ACTIONS_PER_BOARD = 25000;
 const PERSISTENCE_DIR = path.join(process.cwd(), ".data");
 const PERSISTENCE_FILE = path.join(PERSISTENCE_DIR, "boards.json");
 const PERSISTENCE_TEMP_FILE = path.join(PERSISTENCE_DIR, "boards.json.tmp");
+const PERSISTENCE_BACKUP_FILE = path.join(PERSISTENCE_DIR, "boards.json.bak");
 
 const CURSOR_COLORS = [
   "#2563eb",
@@ -65,20 +67,16 @@ let persistTimeout: NodeJS.Timeout | null = null;
 let persistenceWriteChain: Promise<void> = Promise.resolve();
 
 const serializeBoards = (): PersistedBoardsFile => {
-  const serialized: PersistedBoardsFile = {};
-
-  for (const [boardId, board] of boards.entries()) {
-    if (board.actions.length === 0 && board.objects.size === 0) {
-      continue;
-    }
-
-    serialized[boardId] = {
-      actions: board.actions,
-      objects: Array.from(board.objects.values()),
-    };
-  }
-
-  return serialized;
+  const persistenceBoards = new Map(
+    Array.from(boards.entries()).map(([boardId, board]) => [
+      boardId,
+      {
+        actions: board.actions,
+        objects: board.objects,
+      },
+    ]),
+  );
+  return serializeBoardsForPersistence(persistenceBoards);
 };
 
 const persistBoardsNow = async () => {
@@ -88,12 +86,14 @@ const persistBoardsNow = async () => {
 
   try {
     await fs.rename(PERSISTENCE_TEMP_FILE, PERSISTENCE_FILE);
+    await fs.writeFile(PERSISTENCE_BACKUP_FILE, payload, "utf8");
     return;
   } catch (error) {
     console.warn("Atomic board persistence rename failed, using direct write fallback:", error);
   }
 
   await fs.writeFile(PERSISTENCE_FILE, payload, "utf8");
+  await fs.writeFile(PERSISTENCE_BACKUP_FILE, payload, "utf8");
 
   try {
     await fs.unlink(PERSISTENCE_TEMP_FILE);
@@ -138,26 +138,21 @@ const flushPersistBoards = async () => {
 };
 
 const loadPersistedBoards = async () => {
+  const applyParsedBoards = (parsed: PersistedBoardsFile) => {
+    const loadedBoards = parsePersistedBoards(parsed);
+    for (const [boardId, board] of loadedBoards.entries()) {
+      boards.set(boardId, {
+        users: new Map<string, BoardUser>(),
+        actions: board.actions,
+        objects: board.objects,
+      });
+    }
+  };
+
   try {
     const raw = await fs.readFile(PERSISTENCE_FILE, "utf8");
     const parsed = JSON.parse(raw) as PersistedBoardsFile;
-
-    for (const [boardId, persistedBoard] of Object.entries(parsed)) {
-      const safeBoardId = boardId.trim().slice(0, 80);
-      if (!safeBoardId) {
-        continue;
-      }
-
-      boards.set(safeBoardId, {
-        users: new Map<string, BoardUser>(),
-        actions: Array.isArray(persistedBoard.actions) ? persistedBoard.actions : [],
-        objects: new Map(
-          (Array.isArray(persistedBoard.objects) ? persistedBoard.objects : [])
-            .filter((object) => typeof object?.id === "string" && object.id.trim())
-            .map((object) => [object.id, object] as const),
-        ),
-      });
-    }
+    applyParsedBoards(parsed);
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
     if (nodeError?.code === "ENOENT") {
@@ -167,25 +162,15 @@ const loadPersistedBoards = async () => {
     try {
       const fallbackRaw = await fs.readFile(PERSISTENCE_TEMP_FILE, "utf8");
       const parsed = JSON.parse(fallbackRaw) as PersistedBoardsFile;
-
-      for (const [boardId, persistedBoard] of Object.entries(parsed)) {
-        const safeBoardId = boardId.trim().slice(0, 80);
-        if (!safeBoardId) {
-          continue;
-        }
-
-        boards.set(safeBoardId, {
-          users: new Map<string, BoardUser>(),
-          actions: Array.isArray(persistedBoard.actions) ? persistedBoard.actions : [],
-          objects: new Map(
-            (Array.isArray(persistedBoard.objects) ? persistedBoard.objects : [])
-              .filter((object) => typeof object?.id === "string" && object.id.trim())
-              .map((object) => [object.id, object] as const),
-          ),
-        });
+      applyParsedBoards(parsed);
+    } catch (tempError) {
+      try {
+        const backupRaw = await fs.readFile(PERSISTENCE_BACKUP_FILE, "utf8");
+        const parsed = JSON.parse(backupRaw) as PersistedBoardsFile;
+        applyParsedBoards(parsed);
+      } catch {
+        console.error("Failed to load persisted boards:", error, tempError);
       }
-    } catch {
-      console.error("Failed to load persisted boards:", error);
     }
   }
 };
@@ -217,6 +202,21 @@ void app.prepare().then(async () => {
   await loadPersistedBoards();
 
   const httpServer = createServer((req, res) => {
+    const method = (req.method ?? "GET").toUpperCase();
+    const requestUrl = req.url ?? "/";
+    const url = new URL(requestUrl, `http://${req.headers.host ?? "localhost"}`);
+
+    if (method === "GET" && url.pathname === "/api/board-presence") {
+      const rawIds = url.searchParams.getAll("boardId");
+      const presence = buildPresenceSnapshot(boards, rawIds);
+
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.end(JSON.stringify({ presence }));
+      return;
+    }
+
     handle(req, res);
   });
 
@@ -260,6 +260,10 @@ void app.prepare().then(async () => {
       socket.data.boardId = undefined;
       socket.data.user = undefined;
 
+      if (shouldFlushAfterLeave(board.users.size)) {
+        void flushPersistBoards();
+      }
+
       cleanupBoardIfEmpty(currentBoardId);
     };
 
@@ -289,7 +293,7 @@ void app.prepare().then(async () => {
       leaveCurrentBoard();
 
       const board = getBoard(boardId);
-      if (board.users.size >= MAX_USERS_PER_BOARD) {
+      if (!canUserJoinBoard(board.users.size, MAX_USERS_PER_BOARD)) {
         callback({
           ok: false,
           reason: "This Board is full",

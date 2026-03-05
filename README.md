@@ -25,6 +25,16 @@ Open http://localhost:3000.
 - `npm run build` - production build.
 - `npm run start` - starts production server using built app.
 - `npm run lint` - lint project.
+- `npm run typecheck` - strict TypeScript validation with no emit.
+- `npm run test` - run unit tests.
+- `npm run check` - full quality gate (`lint + typecheck + test + build`).
+
+## Production readiness
+
+- Run `npm run check` before deploys.
+- Use `NODE_ENV=production npm run start` for runtime parity.
+- Server persistence uses primary + temp + backup files under `.data/` for safer recovery.
+- App includes `not-found` and global `error` boundaries for safer user-facing failure handling.
 
 ## Architecture
 

@@ -1,9 +1,10 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { readStoredAccount } from "@/lib/account";
+import { type BoardPresence, fetchBoardPresence } from "@/lib/board-presence";
 import {
   type StoredBoard,
   readStoredBoards,
@@ -30,6 +31,7 @@ export default function MyBoardsPage() {
     };
   });
   const [boards, setBoards] = useState<StoredBoard[]>(session.initialBoards);
+  const [presenceByBoard, setPresenceByBoard] = useState<Record<string, BoardPresence>>({});
   const userId = session.userId;
   const nickname = session.nickname;
 
@@ -63,6 +65,33 @@ export default function MyBoardsPage() {
 
     setBoards(removeStoredBoard(userId, boardId));
   };
+
+  useEffect(() => {
+    if (!hasAccount || boards.length === 0) {
+      return;
+    }
+
+    let active = true;
+
+    const fetchPresence = async () => {
+      const presence = await fetchBoardPresence(boards.map((board) => board.id));
+      if (!active || !presence) {
+        return;
+      }
+
+      setPresenceByBoard(presence);
+    };
+
+    void fetchPresence();
+    const intervalId = window.setInterval(() => {
+      void fetchPresence();
+    }, 3000);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [boards, hasAccount]);
 
   return (
     <div className="min-h-screen bg-zinc-100 px-4 py-8">
@@ -117,6 +146,29 @@ export default function MyBoardsPage() {
                     aria-label="Board name"
                   />
                   <p className="text-xs text-zinc-500">ID: {board.id}</p>
+                  <div className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5">
+                    <p className="text-xs font-medium text-zinc-700">
+                      Active right now: {presenceByBoard[board.id]?.usersCount ?? 0}
+                    </p>
+                    {(presenceByBoard[board.id]?.usersCount ?? 0) > 0 ? (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {(presenceByBoard[board.id]?.users ?? []).map((user) => (
+                          <span
+                            key={`${board.id}-${user.userId}-${user.nickname}`}
+                            className="rounded-full border bg-white px-2 py-0.5 text-[11px] font-medium"
+                            style={{
+                              color: user.cursorColor,
+                              borderColor: user.cursorColor,
+                            }}
+                          >
+                            {user.animalEmoji} {user.nickname}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-[11px] text-zinc-500">No users online right now</p>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"

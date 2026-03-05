@@ -862,3 +862,105 @@ Date: 2026-03-04
                     - `Yes, clear` confirms and clears board.
                 Result:
                 - Clear confirmation is now a styled popup consistent with board UI.
+
+            [79] Request: Show active users per board on My Boards page and add Save progress button under Main menu.
+                Changes made:
+                - Added server API endpoint `GET /api/board-presence` that returns current live users per requested board ID.
+                - Updated My Boards page to poll presence every 3s for listed board IDs and display:
+                    - active user count,
+                    - live user chips (emoji + nickname + color) on each board card.
+                - Added manual `💾 Save progress` button under `🏠 Main menu` on board page.
+                - Wired manual save to force immediate preview persistence and show a temporary `Saved` notice.
+                Result:
+                - My Boards now shows who is active on each board in real time.
+                - Users can manually trigger board progress save from the board header.
+
+            [80] Request: Make active users show who is on the board right now and ensure progress is saved even when no users are online.
+                Changes made:
+                - Updated My Boards active-user section wording to `Active right now` and show all currently online user chips for each board.
+                - Added explicit `No users online right now` state when a board has zero active users.
+                - Hardened server persistence on board leave: when the last user leaves a board, server now forces immediate persistence flush to disk.
+                Result:
+                - My Boards clearly shows exactly which users are currently on each board.
+                - Board progress remains persisted even when everyone leaves the board.
+
+            [81] Request: Add unit tests for key app functionality (progress persistence between sessions, max users per board, max boards in My Boards).
+                Changes made:
+                - Added test framework:
+                    - installed `vitest`,
+                    - added npm script: `test`.
+                - Added shared server utility module `lib/server-utils.ts` for pure, testable logic:
+                    - max-users join check,
+                    - board persistence serialization,
+                    - board persistence parsing.
+                - Refactored `server.ts` to use shared utility functions for join-limit and persistence load/save conversion.
+                - Added unit tests:
+                    - `lib/server-utils.test.ts`:
+                        - validates max 10 users rule (11th rejected),
+                        - validates persistence round-trip for board actions/objects and omission of empty boards.
+                    - `lib/boards.test.ts`:
+                        - validates My Boards is capped at 5 entries when bulk saving,
+                        - validates cap remains 5 during repeated upserts.
+                Validation:
+                - `npm test`: 4/4 tests passing.
+                - `npm run lint`: passing.
+
+            [82] Request: Fix active users showing 0 on My Boards while users are online; fix progress not saving between sessions; add unit tests.
+                Changes made:
+                - Added reusable presence utility (`buildPresenceSnapshot`) in `lib/server-utils.ts` and switched server presence API to use it.
+                - Hardened My Boards presence polling:
+                    - appended timestamp cache-buster query param,
+                    - only updates state when a valid `presence` payload is returned.
+                - Hardened persistence durability in `server.ts`:
+                    - added backup file write (`boards.json.bak`) on persistence,
+                    - added startup fallback load order: main file -> temp file -> backup file.
+                - Added reusable persistence helper (`shouldFlushAfterLeave`) and used it in server leave flow.
+                - Added unit tests in `lib/server-utils.test.ts` for:
+                    - active-users presence snapshot correctness (non-zero users returned),
+                    - flush-on-last-leave behavior,
+                    - existing persistence round-trip and user-limit tests remain passing.
+                Validation:
+                - `npm test`: 6/6 tests passing.
+                - `npm run lint`: passing.
+
+            [83] Request: Simplify codebase and break into modules.
+                Changes made:
+                - Extracted Collaborative Board domain types into a dedicated module:
+                    - `components/collaborative-board/types.ts`.
+                - Extracted Collaborative Board pure/helper logic into a dedicated module:
+                    - `components/collaborative-board/utils.ts`.
+                - Refactored `components/CollaborativeBoard.tsx` to import from these modules instead of defining all types/helpers inline.
+                - Preserved runtime behavior while reducing file complexity and improving separation of concerns.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm test`: 6/6 tests passing.
+
+            [84] Request: Make code clearer.
+                Changes made:
+                - Extracted shape toolbar configuration and icon rendering into dedicated module:
+                    - `components/collaborative-board/shape-config.tsx`.
+                - Simplified `components/CollaborativeBoard.tsx` by replacing inline shape config/render logic with imports (`SHAPE_OPTIONS`, `getShapeLabel`, `renderShapeOutlineIcon`).
+                - Extracted My Boards presence networking logic into dedicated module:
+                    - `lib/board-presence.ts` (types + query builder + fetch helper).
+                - Simplified `app/my-boards/page.tsx` by using `fetchBoardPresence` helper instead of inline request construction/parsing.
+                - Added unit test for new presence query helper:
+                    - `lib/board-presence.test.ts`.
+                Validation:
+                - `npm run lint`: passing.
+                - `npm test`: 7/7 tests passing.
+
+            [85] Request: Update code to production level.
+                Changes made:
+                - Added production-quality quality gates in `package.json` scripts:
+                    - `typecheck` (`tsc --noEmit`),
+                    - `check` (`lint + typecheck + test + build`).
+                - Hardened presence networking in `lib/board-presence.ts`:
+                    - added fetch timeout via `AbortController`,
+                    - wrapped request in `try/catch/finally` for safe failure handling.
+                - Added production-safe app fallbacks:
+                    - `app/error.tsx` (global error boundary UI),
+                    - `app/not-found.tsx` (404 UI).
+                - Updated `README.md` with production workflow and readiness guidance.
+                - Fixed strict typecheck issues surfaced by new gate.
+                Validation:
+                - `npm run check`: passing (lint + typecheck + tests + production build).
