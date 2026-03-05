@@ -603,6 +603,10 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const shapeMenuRef = useRef<HTMLDivElement | null>(null);
   const shapeMenuContainerRef = useRef<HTMLDivElement | null>(null);
   const screenshotMenuContainerRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const uploadImageInputRef = useRef<HTMLInputElement | null>(null);
+  const copiedCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastContextMenuPointRef = useRef<Point | null>(null);
   const selectionTransformSessionRef = useRef<SelectionTransformSession | null>(null);
   const zoomHoldTimeoutRef = useRef<number | null>(null);
   const zoomHoldIntervalRef = useRef<number | null>(null);
@@ -642,6 +646,7 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
   const [screenshotMenuOpen, setScreenshotMenuOpen] = useState(false);
   const [pendingScreenshotSelection, setPendingScreenshotSelection] = useState(false);
+  const [contextMenuState, setContextMenuState] = useState<{ x: number; y: number } | null>(null);
 
   const boardLink = useMemo(() => {
     if (typeof window === "undefined") {
@@ -651,7 +656,14 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
     return `${window.location.origin}/board/${boardId}`;
   }, [boardId]);
 
-  const getCanvasPoint = useCallback((event: PointerEvent | React.PointerEvent<Element>): Point | null => {
+  const getCanvasPoint = useCallback(
+    (
+      event:
+        | PointerEvent
+        | MouseEvent
+        | React.PointerEvent<Element>
+        | React.MouseEvent<Element>,
+    ): Point | null => {
     const canvas = canvasRef.current;
     if (!canvas) {
       return null;
@@ -669,6 +681,12 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       x: (event.clientX - rect.left) * scaleX,
       y: (event.clientY - rect.top) * scaleY,
     };
+    },
+    [],
+  );
+
+  const closeBoardContextMenu = useCallback(() => {
+    setContextMenuState(null);
   }, []);
 
   const redrawFromActions = useCallback(async () => {
@@ -1013,6 +1031,239 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
 
     redoStackRef.current = [];
   }, []);
+
+  const loadImageFromBlob = useCallback(async (blob: Blob) => {
+    const imageUrl = URL.createObjectURL(blob);
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const next = new Image();
+        next.onload = () => resolve(next);
+        next.onerror = () => reject(new Error("Failed to load image"));
+        next.src = imageUrl;
+      });
+      return image;
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+    }
+  }, []);
+
+  const insertImageElement = useCallback(
+    (image: HTMLImageElement, anchorPoint?: Point | null) => {
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        return false;
+      }
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        return false;
+      }
+
+      const imageWidth = image.naturalWidth || image.width;
+      const imageHeight = image.naturalHeight || image.height;
+      if (imageWidth <= 0 || imageHeight <= 0) {
+        return false;
+      }
+
+      const maxWidth = Math.max(1, Math.floor(canvas.width * 0.9));
+      const maxHeight = Math.max(1, Math.floor(canvas.height * 0.9));
+      const scale = Math.min(1, maxWidth / imageWidth, maxHeight / imageHeight);
+      const drawWidth = Math.max(1, Math.round(imageWidth * scale));
+      const drawHeight = Math.max(1, Math.round(imageHeight * scale));
+
+      const point = anchorPoint ?? {
+        x: canvas.width / 2,
+        y: canvas.height / 2,
+      };
+      const drawX = clamp(Math.floor(point.x - drawWidth / 2), 0, Math.max(0, canvas.width - drawWidth));
+      const drawY = clamp(Math.floor(point.y - drawHeight / 2), 0, Math.max(0, canvas.height - drawHeight));
+
+      const beforeSnapshot = getCanvasSnapshot();
+      ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+      setSelectionRect({
+        x: drawX,
+        y: drawY,
+        width: drawWidth,
+        height: drawHeight,
+      });
+      setSelectionPreviewRect(null);
+      setSelectionRotation(0);
+      setSelectionPreviewRotation(null);
+      commitCanvasSnapshot();
+      pushHistoryEntry({
+        before: beforeSnapshot,
+        after: getCanvasSnapshot(),
+      });
+      return true;
+    },
+    [commitCanvasSnapshot, getCanvasSnapshot, pushHistoryEntry],
+  );
+
+  const rememberCopiedSelection = useCallback((rect: SelectionRect) => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return null;
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return null;
+    }
+
+    const buffer = document.createElement("canvas");
+    buffer.width = Math.max(1, rect.width);
+    buffer.height = Math.max(1, rect.height);
+    const bufferCtx = buffer.getContext("2d");
+    if (!bufferCtx) {
+      return null;
+    }
+
+    bufferCtx.drawImage(
+      canvas,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      rect.width,
+      rect.height,
+    );
+    copiedCanvasRef.current = buffer;
+    return buffer;
+  }, []);
+
+  const copySelectionToClipboard = useCallback(async () => {
+    const rect = selectionRect;
+    if (!rect) {
+      return false;
+    }
+
+    const copied = rememberCopiedSelection(rect);
+    if (!copied) {
+      return false;
+    }
+
+    if (
+      typeof window.ClipboardItem !== "undefined" &&
+      navigator.clipboard &&
+      "write" in navigator.clipboard
+    ) {
+      try {
+        const blob = await new Promise<Blob | null>((resolve) => {
+          copied.toBlob((nextBlob) => resolve(nextBlob), "image/png");
+        });
+
+        if (blob) {
+          await navigator.clipboard.write([
+            new window.ClipboardItem({
+              "image/png": blob,
+            }),
+          ]);
+        }
+      } catch {
+        // Fallback to internal copied canvas only.
+      }
+    }
+
+    return true;
+  }, [rememberCopiedSelection, selectionRect]);
+
+  const cutSelectionToClipboard = useCallback(async () => {
+    const rect = selectionRect;
+    if (!rect) {
+      return false;
+    }
+
+    const copied = await copySelectionToClipboard();
+    if (!copied) {
+      return false;
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return false;
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return false;
+    }
+
+    const beforeSnapshot = getCanvasSnapshot();
+    ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
+    setSelectionRect(null);
+    setSelectionPreviewRect(null);
+    setSelectionRotation(0);
+    setSelectionPreviewRotation(null);
+    commitCanvasSnapshot();
+    pushHistoryEntry({
+      before: beforeSnapshot,
+      after: getCanvasSnapshot(),
+    });
+    return true;
+  }, [
+    commitCanvasSnapshot,
+    copySelectionToClipboard,
+    getCanvasSnapshot,
+    pushHistoryEntry,
+    selectionRect,
+  ]);
+
+  const pasteImageFromClipboardOrMemory = useCallback(async () => {
+    const anchor = lastContextMenuPointRef.current;
+    if (navigator.clipboard && "read" in navigator.clipboard) {
+      try {
+        const clipboardItems = await navigator.clipboard.read();
+        for (const item of clipboardItems) {
+          const imageType = item.types.find((type) => type.startsWith("image/"));
+          if (!imageType) {
+            continue;
+          }
+
+          const blob = await item.getType(imageType);
+          const image = await loadImageFromBlob(blob);
+          return insertImageElement(image, anchor);
+        }
+      } catch {
+        // Continue with in-memory fallback.
+      }
+    }
+
+    const copiedCanvas = copiedCanvasRef.current;
+    if (!copiedCanvas) {
+      return false;
+    }
+
+    const fallbackImage = new Image();
+    fallbackImage.src = copiedCanvas.toDataURL("image/png");
+    await new Promise<void>((resolve, reject) => {
+      fallbackImage.onload = () => resolve();
+      fallbackImage.onerror = () => reject(new Error("Failed to load copied image"));
+    });
+    return insertImageElement(fallbackImage, anchor);
+  }, [insertImageElement, loadImageFromBlob]);
+
+  const uploadImageFromFile = useCallback(
+    async (file: File) => {
+      const image = await loadImageFromBlob(file);
+      insertImageElement(image, lastContextMenuPointRef.current);
+    },
+    [insertImageElement, loadImageFromBlob],
+  );
+
+  const onUploadImageInputChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) {
+        return;
+      }
+
+      await uploadImageFromFile(file);
+      event.target.value = "";
+    },
+    [uploadImageFromFile],
+  );
 
   const applySnapshotAndBroadcast = useCallback(
     (dataUrl: string) => {
@@ -2797,8 +3048,42 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
   }, [clearZoomHold]);
 
   useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const items = Array.from(event.clipboardData?.items ?? []);
+      const imageItem = items.find((item) => item.type.startsWith("image/"));
+      if (!imageItem) {
+        return;
+      }
+
+      const blob = imageItem.getAsFile();
+      if (!blob) {
+        return;
+      }
+
+      event.preventDefault();
+      void (async () => {
+        const image = await loadImageFromBlob(blob);
+        insertImageElement(image, lastContextMenuPointRef.current);
+      })();
+    };
+
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("paste", onPaste);
+    };
+  }, [insertImageElement, loadImageFromBlob]);
+
+  useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
-      if (!shapeMenuOpen && !screenshotMenuOpen) {
+      if (!shapeMenuOpen && !screenshotMenuOpen && !contextMenuState) {
         return;
       }
 
@@ -2816,13 +3101,18 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       if (screenshotMenuOpen && screenshotContainer && !screenshotContainer.contains(target)) {
         setScreenshotMenuOpen(false);
       }
+
+      const boardContextMenu = contextMenuRef.current;
+      if (contextMenuState && boardContextMenu && !boardContextMenu.contains(target)) {
+        closeBoardContextMenu();
+      }
     };
 
     window.addEventListener("pointerdown", onPointerDown);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [shapeMenuOpen, screenshotMenuOpen]);
+  }, [closeBoardContextMenu, contextMenuState, shapeMenuOpen, screenshotMenuOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3048,6 +3338,13 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
       <header className="relative z-50 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-6">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
+            <button
+              type="button"
+              onClick={() => router.push("/")}
+              className="mb-2 rounded-md bg-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-300"
+            >
+              🏠 Main menu
+            </button>
             <h1 className="text-lg font-semibold tracking-tight">CollBrush</h1>
             <p className="text-sm text-zinc-500">
               Board: <span className="font-medium text-zinc-700">{boardId}</span> · {usersCount}/10 online
@@ -3277,6 +3574,16 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             <button
               type="button"
               onClick={async () => {
+                await navigator.clipboard.writeText(boardId);
+              }}
+              className="rounded-md bg-zinc-800 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-700"
+            >
+              🆔 Copy board ID
+            </button>
+
+            <button
+              type="button"
+              onClick={async () => {
                 if (!boardLink) {
                   return;
                 }
@@ -3339,11 +3646,86 @@ export default function CollaborativeBoard({ boardId, userId, nickname }: Collab
             onPointerCancel={stopDrawing}
             onPointerEnter={emitCursorOnEnter}
             onContextMenu={(event) => {
-              if (mode === "zoom") {
-                event.preventDefault();
-                clearZoomHold();
+              event.preventDefault();
+              clearZoomHold();
+              const point = getCanvasPoint(event);
+              if (!point) {
+                return;
               }
+
+              const container = containerRef.current;
+              const rect = container?.getBoundingClientRect();
+              if (!rect) {
+                return;
+              }
+
+              const menuWidth = 180;
+              const menuHeight = 168;
+              const x = clamp(event.clientX - rect.left, 8, Math.max(8, rect.width - menuWidth));
+              const y = clamp(event.clientY - rect.top, 8, Math.max(8, rect.height - menuHeight));
+              lastContextMenuPointRef.current = point;
+              setContextMenuState({ x, y });
             }}
+          />
+
+          {contextMenuState ? (
+            <div
+              ref={contextMenuRef}
+              className="absolute z-[140] w-44 rounded-md border border-zinc-300 bg-white p-1 shadow-lg"
+              style={{
+                left: `${contextMenuState.x}px`,
+                top: `${contextMenuState.y}px`,
+              }}
+            >
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  closeBoardContextMenu();
+                  void cutSelectionToClipboard();
+                }}
+              >
+                ✂️ Cut
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  closeBoardContextMenu();
+                  void copySelectionToClipboard();
+                }}
+              >
+                📋 Copy
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  closeBoardContextMenu();
+                  void pasteImageFromClipboardOrMemory();
+                }}
+              >
+                📥 Paste
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100"
+                onClick={() => {
+                  closeBoardContextMenu();
+                  uploadImageInputRef.current?.click();
+                }}
+              >
+                🖼️ Upload an image
+              </button>
+            </div>
+          ) : null}
+
+          <input
+            ref={uploadImageInputRef}
+            type="file"
+            accept="image/*"
+            onChange={onUploadImageInputChange}
+            className="hidden"
           />
 
           {Object.values(boardObjects).map((object) => (

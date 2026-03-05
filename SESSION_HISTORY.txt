@@ -450,3 +450,36 @@ Date: 2026-03-04
                 - Updated selected-area crop export to also initialize cropped output with solid white before drawing cropped pixels.
                 Result:
                 - All downloaded screenshots (entire board and selected area) now have a white background instead of transparency.
+
+            [42] Request: Add a top-left button that reroutes user to the main menu.
+                Changes made:
+                - Added a new `⬅ Main menu` button in the board header (top-left area).
+                - Wired button click to `router.push("/")` for direct navigation back to the main page.
+                Result:
+                - Users can return to the main menu from the board with one click.
+
+            [43] Request: Add a button to copy board ID and change the main menu button icon.
+                Changes made:
+                - Added a new `🆔 Copy board ID` button in the toolbar.
+                - Wired the button to copy `boardId` to clipboard via `navigator.clipboard.writeText(boardId)`.
+                - Updated main menu button icon from arrow to home icon (`🏠 Main menu`).
+                Result:
+                - Users can copy the board ID directly with one click.
+                - Main menu button now uses a home icon.
+
+            [44] Request: Add image insertion via Ctrl+V and RMB context menu with upload/cut/copy/paste actions and emoji icons.
+                Changes made:
+                - Added global image paste handling (`Ctrl+V`) that detects image data from clipboard and inserts it onto the board.
+                - Added custom right-click (RMB) context menu on the board canvas with emoji actions:
+                    - `✂️ Cut`
+                    - `📋 Copy`
+                    - `📥 Paste`
+                    - `🖼️ Upload an image`
+                - Implemented image upload flow via hidden file input opened from context menu.
+                - Implemented selection copy/cut for canvas region, including browser clipboard write when supported and internal fallback clipboard memory.
+                - Implemented paste action that first tries system clipboard image read and falls back to internal copied image data.
+                - Inserted/pasted/uploaded images are drawn on canvas, synchronized by snapshot replace, included in undo history, and auto-selected after insertion.
+                Result:
+                - Users can paste image files/screenshots with `Ctrl+V`.
+                - Users can right-click and upload images from computer.
+                - Users have cut/copy/paste actions in RMB menu with emoji icons.
